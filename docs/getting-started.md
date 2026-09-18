@@ -70,4 +70,6 @@ export BOA_API_KEY=provider-api-key
 boring-orch-agent --home .boa worker --id llm-1 --runtime llm --slots 1
 ```
 
+The worker asks an OpenAI-compatible server for JSON output (`response_format: {"type": "json_object"}`), which keeps a chatty model inside the one-action-per-turn envelope; `export BOA_JSON_MODE=off` disables it for servers that reject the field. A server that reports no `usage` in its replies leaves the task's token accounting unknown, so do not set `budget.max_tokens` for such a provider: the next model call would be blocked as unverifiable.
+
 Use a template from [`examples/jobs/`](../examples/jobs/) as the submission body. For Coddy’s local OpenAI-compatible provider, follow [`examples/coddy/README.md`](../examples/coddy/README.md).

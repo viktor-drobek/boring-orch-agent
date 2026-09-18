@@ -31,7 +31,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class Provider:
     """Operator configuration, never accepted from a model or a submitted task."""
-    def __init__(self, kind, base_url, model, api_key=""):
+    def __init__(self, kind, base_url, model, api_key="", json_mode=True):
         if kind not in ("openai", "anthropic", "ollama"):
             raise Invalid("BOA_PROVIDER must be openai, anthropic or ollama")
         parsed = urllib.parse.urlsplit(base_url)
@@ -43,14 +43,19 @@ class Provider:
         if not model:
             raise Invalid("Set BOA_MODEL before starting an llm worker")
         self.kind, self.base_url, self.model, self.api_key = kind, base_url.rstrip("/"), model, api_key
+        self.json_mode = bool(json_mode)
 
     @classmethod
     def from_env(cls):
         kind = os.environ.get("BOA_PROVIDER", "openai")
         defaults = {"openai": "https://api.openai.com/v1", "anthropic": "https://api.anthropic.com/v1",
                     "ollama": "http://localhost:11434"}
+        # The agent loop needs one JSON object per turn. Ollama is already asked for JSON
+        # below; this asks an OpenAI-compatible server for the same. Servers that reject the
+        # standard field are accommodated with BOA_JSON_MODE=off.
+        json_mode = os.environ.get("BOA_JSON_MODE", "on").strip().lower() not in ("off", "0", "false", "no")
         return cls(kind, os.environ.get("BOA_BASE_URL", defaults.get(kind, "")),
-                   os.environ.get("BOA_MODEL", ""), os.environ.get("BOA_API_KEY", ""))
+                   os.environ.get("BOA_MODEL", ""), os.environ.get("BOA_API_KEY", ""), json_mode)
 
     def complete(self, messages, model=None, output_tokens=2048, timeout=60):
         model = model or self.model
@@ -73,6 +78,8 @@ class Provider:
             # max_tokens remains the widely supported compatibility field. Model-specific
             # APIs that require a different field should use a compatibility gateway.
             body = {"model": model, "messages": messages, "max_tokens": output_tokens, "stream": False}
+            if self.json_mode:
+                body["response_format"] = {"type": "json_object"}
         request = urllib.request.Request(self.base_url + endpoint, canonical(body).encode(), headers, method="POST")
         try:
             with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:

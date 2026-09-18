@@ -86,7 +86,7 @@ export BOA_API_KEY="$CODDY_HTTP_TOKEN"
 boring-orch-agent --home .boa worker --id coddy-1 --runtime llm --slots 1
 ```
 
-Confirm the model identifier from Coddy with `GET /v1/models` or its `/docs/` page. `boring-orch-agent` sends OpenAI-compatible chat-completion requests; Coddy owns its own model, tool, and permission configuration. The runnable files and two-direction integration steps are in [examples/coddy](examples/coddy/README.md).
+Confirm the model identifier from Coddy with `GET /v1/models` or its `/docs/` page. `boring-orch-agent` sends OpenAI-compatible chat-completion requests; Coddy owns its own model, tool, and permission configuration. Requests carry `response_format: {"type": "json_object"}`, because the loop needs exactly one JSON action per turn; set `BOA_JSON_MODE=off` for a server that rejects that field. The runnable files and two-direction integration steps are in [examples/coddy](examples/coddy/README.md).
 
 ## Development and release
 

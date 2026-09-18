@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Ask OpenAI-compatible servers for JSON output with `response_format`, matching the JSON request already sent to Ollama, so a chatty or reasoning model stays inside the one-action-per-turn envelope. `BOA_JSON_MODE=off` restores the previous request shape.
+
 - Add acceptance scenarios for a queued assignment that stays `Fresh` while waiting, a runner that cannot record its process identity and therefore never starts, the log file named by a `Runner lost` attempt, and the launch log a worker keeps for each attempt.
 - Document confirmed non-start requeueing after worker loss, per-attempt runner logs under `logs/`, relaunch backoff and read snapshots in the architecture and getting-started guides.
 

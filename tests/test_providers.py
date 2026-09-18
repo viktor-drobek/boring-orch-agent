@@ -194,6 +194,29 @@ class ProviderTests(unittest.TestCase):
                 provider.complete([{"role": "system", "content": "test"}, {"role": "user", "content": "test"}])
             self.assertEqual(len(requests), 1)
 
+    def test_json_mode_is_requested_by_default_and_can_be_disabled(self):
+        # The agent loop requires one JSON object per turn. Ollama is already asked for JSON;
+        # an OpenAI-compatible server is asked with the standard response_format field.
+        for env, expected in (({}, {"type": "json_object"}), ({"BOA_JSON_MODE": "off"}, None)):
+            with server([(200, completion("openai", {"action": "final", "result": {"answer": 42}}))]) as (base, requests, _, _), \
+                    self.environment("openai", base), patch.dict(os.environ, env):
+                task_id, aid = self.submit()
+                run_attempt(self.store, aid, "llm")
+                self.manager.tick()
+                self.assertEqual(self.store.task(task_id)["status"], "Succeeded")
+                self.assertEqual(requests[0]["body"].get("response_format"), expected, env)
+
+    def test_json_mode_is_not_sent_to_providers_without_that_field(self):
+        for kind, absent in (("anthropic", "response_format"), ("ollama", "response_format")):
+            with server([(200, completion(kind, {"action": "final", "result": {"answer": 42}}))]) as (base, requests, _, _), \
+                    self.environment(kind, base):
+                task_id, aid = self.submit()
+                run_attempt(self.store, aid, "llm")
+                self.manager.tick()
+                self.assertEqual(self.store.task(task_id)["status"], "Succeeded")
+                self.assertNotIn(absent, requests[0]["body"])
+        self.assertEqual(requests[0]["body"]["format"], "json")  # Ollama's own JSON switch
+
     def test_provider_configuration_is_explicit(self):
         for url in ("http://remote.example/v1", "https://user:secret@example.com", "file:///tmp/model", "https://example.com/?key=secret"):
             with self.assertRaises(Invalid):

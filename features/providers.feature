@@ -22,6 +22,19 @@ Feature: Provider uncertainty cannot become free capacity or safe replay
       | anthropic |
       | ollama    |
 
+  Scenario: The OpenAI-compatible request asks the server for a JSON object
+    Given the "openai" fixture requests a file read then returns a final answer
+    When the LLM agent runs against the fixture
+    Then the task status is "Succeeded"
+    And the provider was asked for a JSON object response
+
+  Scenario: An operator can disable JSON mode for a server that rejects it
+    Given the worker disables provider JSON mode
+    And the "openai" fixture requests a file read then returns a final answer
+    When the LLM agent runs against the fixture
+    Then the task status is "Succeeded"
+    And the provider was not asked for a JSON object response
+
   Scenario: A confirmed rate-limit rejection is eligible for manager-owned retry
     Given the provider rejects the request with HTTP 429
     When the replay-safe LLM agent runs against the fixture

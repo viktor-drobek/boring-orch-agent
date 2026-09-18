@@ -470,12 +470,19 @@ def http_timeout(context):
     context.responses = ["wait"]
 
 
+@given("the worker disables provider JSON mode")
+def disable_json_mode(context):
+    context.json_mode = "off"
+
+
 def run_provider(context, replay_safe):
     h = context.agent
     base, context.requests, _, _ = context.resources.enter_context(server(context.responses))
-    context.resources.enter_context(patch.dict(os.environ, {
-        "BOA_PROVIDER": context.provider_kind, "BOA_BASE_URL": base,
-        "BOA_MODEL": "fixture-model", "BOA_API_KEY": "fixture-only"}))
+    environment = {"BOA_PROVIDER": context.provider_kind, "BOA_BASE_URL": base,
+                   "BOA_MODEL": "fixture-model", "BOA_API_KEY": "fixture-only"}
+    if getattr(context, "json_mode", None):
+        environment["BOA_JSON_MODE"] = context.json_mode
+    context.resources.enter_context(patch.dict(os.environ, environment))
     h.submit(runtime="llm", demo={}, budget={"request_seconds": .2},
              retry={"replay_safe": replay_safe, "max_attempts": 2, "backoff_seconds": 1})
     h.tick()
@@ -491,6 +498,17 @@ def llm(context):
 @when("the replay-safe LLM agent runs against the fixture")
 def replay_llm(context):
     run_provider(context, True)
+
+
+@then("the provider was asked for a JSON object response")
+def json_mode_requested(context):
+    body = context.requests[0]["body"]
+    assert body.get("response_format") == {"type": "json_object"}, body.get("response_format")
+
+
+@then("the provider was not asked for a JSON object response")
+def json_mode_absent(context):
+    assert "response_format" not in context.requests[0]["body"], context.requests[0]["body"]
 
 
 @then("the provider received the permitted file contents")

@@ -17,6 +17,8 @@ curl --fail-with-body http://127.0.0.1:12345/v1/models \
   -H "Authorization: Bearer $CODDY_HTTP_TOKEN"
 ```
 
+Coddy's replies do not include a `usage` object, so the orchestrator marks token accounting unknown. Leave `budget.max_tokens` unset in tasks sent to Coddy and bound the work with `max_steps`, `request_seconds`, and `attempt_seconds` instead. A reasoning model such as `neuraldeep/qwen3.6-unlim` needs the JSON-object request mode that the worker sends by default; keep `BOA_JSON_MODE` at its default for Coddy.
+
 Choose a model ID from that response, then initialize and start the orchestrator:
 
 ```bash
