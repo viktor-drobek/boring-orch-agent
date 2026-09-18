@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "objective": "Return the deterministic offline demo result",
+  "runtime": "demo",
+  "retry": {
+    "max_attempts": 2,
+    "replay_safe": true,
+    "backoff_seconds": 0.1
+  },
+  "demo": {
+    "fail_attempts": 1,
+    "delay_seconds": 0.1
+  }
+}

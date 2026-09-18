@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "objective": "Demonstrate a safe retry and a validated result without calling a model",
+  "runtime": "demo",
+  "demo": {
+    "delay_seconds": 0.2,
+    "fail_attempts": 1,
+    "result": {"message": "The offline agent works", "verified": true}
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["message", "verified"],
+    "properties": {"message": {"type": "string"}, "verified": {"const": true}},
+    "additionalProperties": false
+  },
+  "retry": {"max_attempts": 2, "replay_safe": true, "backoff_seconds": 0.1}
+}

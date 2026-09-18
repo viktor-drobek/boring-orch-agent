@@ -1,0 +1,7 @@
+include behave.ini Makefile CONTRIBUTING.md README.md LICENSE CHANGELOG.md
+include .github/workflows/build.yml
+recursive-include features *.feature *.py
+recursive-include tests *.py
+recursive-include docs *.md
+recursive-include examples *.json *.md
+include tools/__init__.py tools/check_bdd.py tools/pipeline.py tools/smoke_wheel.py tools/version.py
