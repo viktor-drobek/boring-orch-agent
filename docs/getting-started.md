@@ -47,7 +47,7 @@ boring-orch-agent --home .boa wait TASK_ID --timeout 60
 boring-orch-agent --home .boa result TASK_ID
 ```
 
-`submit` returns a receipt immediately after storage. `wait` returns `Succeeded`, `Failed`, `Cancelled`, or a nonterminal task whose observation is `Unknown`. Use `events TASK_ID` when diagnosing what happened.
+`submit` returns a receipt immediately after storage. `wait` returns `Succeeded`, `Failed`, `Cancelled`, or a nonterminal task whose observation is `Unknown`. Use `events TASK_ID` when diagnosing what happened. Each runner's output is kept in `.boa/logs/ATTEMPT_ID.log`; an attempt reported as `Runner lost` names that file in its error message, so read it before resolving the attempt.
 
 ## 5. Start API v1 for people or other agents
 

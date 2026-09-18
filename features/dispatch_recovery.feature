@@ -47,6 +47,17 @@ Feature: Recover dispatch without duplicating uncertain execution
     And the task has 1 recorded attempt
     And 1 shared slot is reserved
     And no task result is accepted
+    And the attempt error names its log file
+
+  Scenario: A runner that cannot prove its identity never starts
+    Given the task is assigned but has not started
+    When the runner cannot record its process identity and delivers the assignment
+    And the manager reconciles
+    Then the task status is "Failed"
+    And the event history includes "attempt.rejected"
+    And the task has 1 recorded attempt
+    And 0 shared slots are reserved
+    And no task result is accepted
 
   Scenario: Cancellation cannot turn an unknown outcome into confirmed cessation
     Given the runner crashed immediately after claiming execution

@@ -442,6 +442,8 @@ class StoreCase(unittest.TestCase):
         with self.store.transaction() as db:
             db.execute("UPDATE attempts SET heartbeat=heartbeat-60")
         self.assertEqual(self.store.task(task_id)["observation_condition"], "Stale")
+        self.store.observe(aid, "w", 2, "Failed", error_kind="permanent", error_message="fixture end", tokens=0)
+        self.manager.tick()
 
     def test_cancel_of_pending_task_records_finish(self):
         task_id = self.submit()

@@ -309,10 +309,31 @@ def invalid_capacity(context):
 
 
 @given("its observation becomes stale while its process is alive")
+@given("the assignment has waited longer than the observation window")
 def stale_observation(context):
     h = context.agent
     with h.store.transaction() as db:
         db.execute("UPDATE attempts SET heartbeat=0 WHERE id=?", (h.attempt()["id"],))
+
+
+@when("the runner cannot record its process identity and delivers the assignment")
+def deliver_without_identity(context):
+    # Simulates a host where /proc gives no PID start time; the claim must fail closed.
+    with patch("boring_agent.runner.identity", return_value=None):
+        context.agent.deliver()
+
+
+@then("the attempt error names its log file")
+def error_names_log(context):
+    attempt = context.agent.attempt()
+    assert f"logs/{attempt['id']}.log" in (attempt["error_message"] or ""), attempt["error_message"]
+
+
+@then("the worker kept a launch log for the attempt")
+def launch_log(context):
+    h = context.agent
+    log = h.store.home / "logs" / f"{h.attempt()['id']}.log"
+    assert log.is_file() and "launch 1" in log.read_text(), log
 
 
 @given('a task that fails once with "{failure}" and replay safety "{safe}"')

@@ -12,3 +12,4 @@ Feature: Operators can follow a task through the public CLI
     And I retrieve the result through the CLI
     Then the CLI returns the validated demo result
     And the event history includes "task.finished"
+    And the worker kept a launch log for the attempt

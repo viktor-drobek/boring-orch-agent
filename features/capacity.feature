@@ -46,3 +46,13 @@ Feature: Admit work only against feasible reserved capacity
     Then the observation condition is "Stale"
     And the task status is "Running"
     And 1 shared slot is reserved
+
+  Scenario: A queued assignment is waiting for capacity, not missing evidence
+    Given a fresh demo worker with 1 slots
+    And a task accepted with key "capacity"
+    And the task is assigned but has not started
+    And the assignment has waited longer than the observation window
+    When the manager reconciles
+    Then the observation condition is "Fresh"
+    And the task status is "Scheduled"
+    And 1 shared slot is reserved
