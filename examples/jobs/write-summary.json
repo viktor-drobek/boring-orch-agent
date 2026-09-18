@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "objective": "Inspect the visible project documentation and write a concise, factual summary to reports/agent-summary.md. Create no other files. Return the path written and a short summary of its contents.",
+  "runtime": "llm",
+  "sandbox": "workspace-write",
+  "tools": ["list_files", "read_file", "write_file"],
+  "output_schema": {
+    "type": "object",
+    "required": ["path", "summary"],
+    "properties": {
+      "path": {"type": "string", "const": "reports/agent-summary.md"},
+      "summary": {"type": "string"}
+    },
+    "additionalProperties": false
+  },
+  "budget": {"max_steps": 12, "request_seconds": 90, "output_tokens": 1600}
+}

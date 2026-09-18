@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "objective": "Inspect the configured workspace for maintainability risks. Read relevant source and documentation files, then return at most five prioritized findings with file paths and suggested next actions. Do not modify files.",
+  "runtime": "llm",
+  "sandbox": "read-only",
+  "tools": ["list_files", "read_file"],
+  "output_schema": {
+    "type": "object",
+    "required": ["summary", "findings"],
+    "properties": {
+      "summary": {"type": "string"},
+      "findings": {
+        "type": "array",
+        "maxItems": 5,
+        "items": {
+          "type": "object",
+          "required": ["priority", "path", "finding", "next_action"],
+          "properties": {
+            "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+            "path": {"type": "string"},
+            "finding": {"type": "string"},
+            "next_action": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "additionalProperties": false
+  },
+  "budget": {"max_steps": 12, "request_seconds": 90, "output_tokens": 1800}
+}

@@ -1,0 +1,5 @@
+# Testing
+
+Put user-visible lifecycle behavior in `features/` and reuse production interfaces from step definitions. Put focused fault injection and boundary invariants in `tests/`. Tests must isolate temporary stores and workspaces and use demo or loopback providers instead of paid model services.
+
+Run a focused feature with `python -m behave features/<name>.feature` and a focused unit test with `python -m unittest tests.test_module.Class.test_name`. The full required command is `python tools/pipeline.py`.

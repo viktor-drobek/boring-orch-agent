@@ -1,0 +1,5 @@
+# Code style
+
+Use standard-library-first Python 3.11+ with explicit, readable control flow. Keep JSON contracts strict: reject unknown fields, preserve idempotency semantics, and do not emit secrets in errors or logs. Comments and agent rule files are written in English.
+
+Prefer small functions that expose state ownership. Public examples must be valid JSON and must not contain credentials, real tokens, or a claim that a receipt is a successful result.

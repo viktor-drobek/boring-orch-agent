@@ -1,0 +1,11 @@
+# Workflow
+
+For a feature or bug, first add or revise an observable Gherkin scenario in `features/`. Run it to establish the intended red state, implement the smallest owning-layer change, then run the focused feature or unittest.
+
+Before reporting work, run `python tools/pipeline.py`. It is the release gate: acceptance features must pass before unit tests, package build, and the installed-wheel demo. Do not weaken an expected behavior simply to make a failing test pass.
+
+Update examples and API documentation when a public task schema, API route, CLI response, or task state meaning changes.
+
+## Rules Sync
+
+**MANDATORY** — if any rule or agent-instruction file changes, mirror it in the same commit across `AGENTS.md` / `CLAUDE.md`, `.cursor/rules/`, `.claude/rules/`, `.codex/rules.md`, and `.coddy/rules/`. Keep Cursor and Claude topic bodies equivalent, adapt only frontmatter, refresh the Codex index when topics change, and verify `CLAUDE.md` remains a symlink to `AGENTS.md`.

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "objective": "List the visible files in the configured workspace that are relevant to the project documentation. Read only files needed to classify them and return an inventory with relative paths, purpose, and confidence. Do not modify files.",
+  "runtime": "llm",
+  "sandbox": "read-only",
+  "tools": ["list_files", "read_file"],
+  "output_schema": {
+    "type": "object",
+    "required": ["items"],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["path", "purpose", "confidence"],
+          "properties": {
+            "path": {"type": "string"},
+            "purpose": {"type": "string"},
+            "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "additionalProperties": false
+  },
+  "budget": {"max_steps": 10, "request_seconds": 60, "output_tokens": 1400}
+}

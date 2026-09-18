@@ -4,6 +4,8 @@
 
 It applies the ideas in Tim Boring’s [*Build an Orchestrator in Go (From Scratch)*](https://books.google.com/books?vid=ISBN9781617299759) to local agent work. This Python implementation is independent software; it does not include the book or its source code.
 
+Start with the complete [getting-started guide](docs/getting-started.md), then choose a versioned task template from [examples/jobs](examples/jobs/README.md). [Job descriptions and sample scenarios](docs/job-descriptions.md) explain how a person, Coddy, or another trusted integration turns an approved ticket or workflow into a durable task.
+
 ## For people
 
 Install Python 3.11+ and create an environment:
@@ -87,6 +89,8 @@ boring-orch-agent --home .boa worker --id coddy-1 --runtime llm --slots 1
 Confirm the model identifier from Coddy with `GET /v1/models` or its `/docs/` page. `boring-orch-agent` sends OpenAI-compatible chat-completion requests; Coddy owns its own model, tool, and permission configuration. The runnable files and two-direction integration steps are in [examples/coddy](examples/coddy/README.md).
 
 ## Development and release
+
+Agents can use the canonical [project instructions](AGENTS.md). Cursor, Claude Code, Codex, and Coddy-specific rule files are versioned with the repository; see [the rule trees](AGENTS.md#rules-sync) for their synchronization contract.
 
 ```bash
 python -m pip install -e '.[dev]'

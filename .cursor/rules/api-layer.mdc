@@ -1,0 +1,9 @@
+---
+description: HTTP API v1 contract and authentication
+globs: boring_agent/api.py, boring_agent/cli.py, tests/test_api.py, docs/api-v1.md
+alwaysApply: false
+---
+
+# API layer
+
+Keep `/api/v1` as a thin authenticated adapter over `Store`. Mutating requests require bearer authentication when configured and a caller-provided idempotency key. Return a receipt for accepted commands, not a predicted execution result. Keep error shape and HTTP status mapping documented in `docs/api-v1.md`, and add API tests for every route or authorization change.
