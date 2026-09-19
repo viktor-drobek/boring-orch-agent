@@ -79,7 +79,9 @@ class StoreCase(unittest.TestCase):
                         {"workspace": "/tmp"}, {"status": "Succeeded"},
                         {"budget": {"max_attempts": 0}}, {"retry": {"max_attempts": 0}},
                         {"output_schema": {"$ref": "https://example.com/schema"}},
-                        {"sandbox": "workspace-write"}):
+                        {"sandbox": "workspace-write"}, {"expect_files": "reports/a.md"},
+                        {"expect_files": ["../escape.md"]}, {"expect_files": ["/etc/passwd"]},
+                        {"expect_files": [".hidden/a.md"]}, {"expect_files": [""]}):
             with self.subTest(changes=changes), self.assertRaises(Invalid):
                 self.submit(**changes)
         self.assertEqual(self.store.tasks(), [])
@@ -527,6 +529,15 @@ class WorkspaceTests(unittest.TestCase):
             writable = Workspace(root, ["write_file"], root / "state")
             writable.call({"action": "write_file", "path": "safe.txt", "content": "changed"})
             self.assertEqual((root / "safe.txt").read_text(), "changed")
+            # Missing parents are created inside the workspace; escapes and hidden parents are not.
+            writable.call({"action": "write_file", "path": "new/deep/dir/schema.json", "content": "{}"})
+            self.assertEqual((root / "new/deep/dir/schema.json").read_text(), "{}")
+            for path in ("../outside/x.json", ".git/config", "alias/x.json"):
+                with self.subTest(path=path), self.assertRaises(Invalid):
+                    writable.call({"action": "write_file", "path": path, "content": "x"})
+            self.assertFalse((root.parent / "outside").exists())
+            self.assertEqual(writable.missing(["safe.txt", "new/deep/dir/schema.json", "absent.md", "../x"]),
+                             ["absent.md", "../x"])
 
 
 if __name__ == "__main__":

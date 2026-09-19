@@ -22,6 +22,14 @@ Feature: Enforce task tool permissions at the workspace boundary
       | /etc/passwd    |
       | linked.txt     |
 
+  Scenario: A permitted write creates its missing parent directories
+    When the writing agent writes "generated/api/schema.json"
+    Then the workspace file "generated/api/schema.json" holds the written text
+
+  Scenario: A permitted write still cannot leave the workspace
+    When the writing agent writes "../escaped/schema.json"
+    Then the command fails with "invalid_request"
+
   Scenario: An unpermitted write cannot change a file
     When the read-only agent tries to overwrite the note
     Then the command fails with "invalid_request"

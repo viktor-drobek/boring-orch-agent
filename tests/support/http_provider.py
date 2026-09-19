@@ -5,15 +5,19 @@ import queue
 import threading
 
 
-def completion(kind, action, usage=True):
-    content = json.dumps(action)
+def completion(kind, action, usage=True, truncated=False):
+    """A provider reply carrying `action`; `action=None` with truncated=True models a reply
+    whose whole output budget went to reasoning, so no content arrived."""
+    content = "" if action is None else json.dumps(action)
     if kind == "anthropic":
         return {"content": [{"type": "text", "text": content}],
+                "stop_reason": "max_tokens" if truncated else "end_turn",
                 **({"usage": {"input_tokens": 20, "output_tokens": 10}} if usage else {})}
     if kind == "ollama":
         return {"message": {"content": content}, "done": True,
+                "done_reason": "length" if truncated else "stop",
                 **({"prompt_eval_count": 20, "eval_count": 10} if usage else {})}
-    return {"choices": [{"message": {"content": content}}],
+    return {"choices": [{"message": {"content": content}, "finish_reason": "length" if truncated else "stop"}],
             **({"usage": {"prompt_tokens": 20, "completion_tokens": 10}} if usage else {})}
 
 

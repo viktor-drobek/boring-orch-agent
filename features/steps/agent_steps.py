@@ -433,6 +433,23 @@ def result_answer(context, answer):
     assert read_result(h.store, task["attempts"][-1], task["spec"])["answer"] == answer
 
 
+@given('a task that expects the file "{path}" and finishes without writing it')
+def expects_file(context, path):
+    context.agent.submit(expect_files=[path], demo={"delay_seconds": 0, "result": {"path": path}})
+
+
+@when('I submit a task expecting the file "{path}"')
+def submit_expecting(context, path):
+    context.agent.capture(lambda: context.agent.submit(expect_files=[path]))
+
+
+@given('the workspace already contains "{path}"')
+def preexisting(context, path):
+    target = context.agent.workspace / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("already here")
+
+
 @when("the attempt artifact is altered")
 def tamper(context):
     h = context.agent
@@ -463,6 +480,18 @@ def provider_script(context, provider):
 @given("the provider rejects the request with HTTP {status:d}")
 def http_error(context, status):
     context.responses = [(status, {"error": "fixture rejection"})]
+
+
+@given('the "{provider}" fixture returns an empty completion cut off at the output limit')
+def truncated_empty(context, provider):
+    context.provider_kind = provider
+    context.responses = [(200, completion(provider, None, truncated=True))]
+
+
+@then('the failure reason mentions "{text}"')
+def reason_mentions(context, text):
+    task = context.agent.task()
+    assert text in (task["reason"] or ""), task["reason"]
 
 
 @given("the provider accepts the request but does not reply before its deadline")
@@ -540,6 +569,20 @@ def files(context):
 @when('the read-only agent reads "{path}"')
 def read_file(context, path):
     context.agent.capture(lambda: context.file_tools.call({"action": "read_file", "path": path}))
+
+
+@when('the writing agent writes "{path}"')
+def writing_agent(context, path):
+    h = context.agent
+    tools = Workspace(h.workspace, ["write_file"], h.store.home)
+    h.capture(lambda: tools.call({"action": "write_file", "path": path, "content": "generated text"}))
+
+
+@then('the workspace file "{path}" holds the written text')
+def written(context, path):
+    h = context.agent
+    assert h.error is None, h.error
+    assert (h.workspace / path).read_text() == "generated text"
 
 
 @when("the read-only agent tries to overwrite the note")

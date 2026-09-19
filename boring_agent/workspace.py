@@ -63,8 +63,11 @@ class Workspace:
             content = action.get("content")
             if not isinstance(content, str) or len(content.encode()) > 65536:
                 raise Invalid("write_file requires UTF-8 text of at most 64 KiB")
-            if not path.parent.is_dir() or (path.exists() and not path.is_file()):
-                raise Invalid("Parent directory must exist and target must be a regular file")
+            if path.exists() and not path.is_file():
+                raise Invalid("Target must be a regular file")
+            # path() has already rejected escapes, hidden names and symlinked components, so
+            # every directory created here lies inside the workspace.
+            path.parent.mkdir(parents=True, exist_ok=True)
             fd, temporary = tempfile.mkstemp(prefix=".boa-write-", dir=path.parent)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as file:
@@ -77,3 +80,14 @@ class Workspace:
                     os.unlink(temporary)
             return {"written": str(path.relative_to(self.root)), "bytes": len(content.encode())}
         raise Invalid("Unknown tool")
+
+    def missing(self, relative_paths):
+        """Expected files that are not regular files inside the workspace right now."""
+        absent = []
+        for relative in relative_paths:
+            try:
+                if not self.path(relative).is_file():
+                    absent.append(relative)
+            except Invalid:
+                absent.append(relative)
+        return absent

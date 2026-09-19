@@ -57,6 +57,19 @@ Feature: Provider uncertainty cannot become free capacity or safe replay
       | 503    |
       | 504    |
 
+  Scenario Outline: A completion cut off before any content is a clear permanent failure
+    Given the "<provider>" fixture returns an empty completion cut off at the output limit
+    When the replay-safe LLM agent runs against the fixture
+    Then the task status is "Failed"
+    And the failure reason mentions "truncated"
+    And 0 shared slots are reserved
+
+    Examples:
+      | provider  |
+      | openai    |
+      | anthropic |
+      | ollama    |
+
   Scenario: A remote timeout cannot be automatically replayed
     Given the provider accepts the request but does not reply before its deadline
     When the replay-safe LLM agent runs against the fixture

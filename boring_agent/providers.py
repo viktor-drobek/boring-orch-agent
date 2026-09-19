@@ -22,6 +22,7 @@ class ExecutionError(Exception):
 class Completion:
     text: str
     tokens: int | None
+    truncated: bool = False  # the server stopped at its output limit
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -105,17 +106,21 @@ class Provider:
                 content = "".join(x["text"] for x in obj["content"] if x.get("type") == "text")
                 counts = [usage.get("input_tokens"), usage.get("output_tokens"),
                           usage.get("cache_creation_input_tokens", 0), usage.get("cache_read_input_tokens", 0)]
+                truncated = obj.get("stop_reason") == "max_tokens"
             elif self.kind == "ollama":
                 if obj.get("done") is not True:
                     raise ExecutionError("unknown", "Ollama did not confirm completion")
                 content = obj["message"]["content"]
                 counts = [obj.get("prompt_eval_count"), obj.get("eval_count")]
+                truncated = obj.get("done_reason") == "length"
             else:
-                content = obj["choices"][0]["message"]["content"]
+                choice = obj["choices"][0]
+                content = choice["message"]["content"]
                 counts = [usage.get("prompt_tokens"), usage.get("completion_tokens")]
+                truncated = choice.get("finish_reason") == "length"
             if not isinstance(content, str):
                 raise ValueError("Non-text completion")
             tokens = sum(counts) if all(type(x) is int and x >= 0 for x in counts) else None
-            return Completion(content, tokens)
+            return Completion(content, tokens, truncated)
         except (Invalid, ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
             raise ExecutionError("permanent", "Provider returned a malformed completion; usage is unknown") from exc
