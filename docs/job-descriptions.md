@@ -64,3 +64,29 @@ curl --fail-with-body http://127.0.0.1:8088/api/v1/tasks \
 ```
 
 Save the returned `task_id` alongside the ticket or workflow run. Reuse the same idempotency key only when retrying the exact same submission after a lost response. A new version of a job needs a new key.
+
+## Native exec jobs and sessions
+
+Native jobs are registered through the lifecycle layer, not submitted to the
+legacy `llm`/`demo` manager-worker route. They require `id`, `objective`,
+`runtime` (`acp` or `coddy_native`) and an explicit `model`; `dependencies` is an
+optional list of job IDs, and `session` is either absent for a new root session
+or an exact `@session:<id>` mention. The mention is a read-only Coddy digest
+attachment capped at 24 KiB, not a live connection.
+
+The lifecycle stores `lifecycle_sessions`, `lifecycle_jobs`,
+`lifecycle_runs`, `lifecycle_branches`, `lifecycle_transfers` and ordered
+`lifecycle_events` in the existing SQLite database. Registration and dependency
+settlement are atomic. A first run warms a new session with `/compact` followed
+by `/rpa-init` using a model with at least 100,000 context tokens; the default
+is `ndsub/qwen3.8-27b` (262,144). Warm-up time consumes the job deadline.
+Sequential dependents may reuse a completed session, while a fan-out creates
+one independent child session per dependent with shared lineage. No live session
+is used concurrently.
+
+The API exposes `GET /api/v1/sessions`, session and branch reads,
+`POST /api/v1/native/jobs`, `POST /api/v1/native/workflows`, and native run
+history. These routes register or observe state only; they do not launch a
+native job. Unknown run/transfer outcomes after restart are retained as
+`unknown`/`recovering` and never replay automatically. Confirmed warm-up steps
+and external operations use stable idempotency keys for safe retry.

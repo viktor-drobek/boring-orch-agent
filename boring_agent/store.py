@@ -12,6 +12,8 @@ import uuid
 from .model import (Conflict, Invalid, NotFound, StorageError, TERMINAL,
                     canonical, digest, validate_spec)
 
+CURRENT_SCHEMA_VERSION = 2
+
 SCHEMA = """
 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE tasks(
@@ -23,7 +25,7 @@ CREATE TABLE tasks(
  observation_condition TEXT NOT NULL DEFAULT 'Fresh', observed_at REAL);
 CREATE TABLE commands(
  id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
- task_id TEXT NOT NULL REFERENCES tasks(id), payload_hash TEXT NOT NULL, accepted_at REAL NOT NULL);
+ task_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at REAL NOT NULL);
 CREATE TABLE workers(
  id TEXT PRIMARY KEY, runtimes TEXT NOT NULL, slots INTEGER NOT NULL CHECK(slots>0),
  allow_write INTEGER NOT NULL, last_seen REAL NOT NULL, pid INTEGER NOT NULL);
@@ -42,10 +44,44 @@ CREATE TABLE outbox(
 CREATE TABLE events(
  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT REFERENCES tasks(id),
  attempt_id TEXT, kind TEXT NOT NULL, at REAL NOT NULL, details TEXT NOT NULL);
+CREATE TABLE workflow_roots(
+ id TEXT PRIMARY KEY, state TEXT NOT NULL, iteration INTEGER NOT NULL DEFAULT 0,
+ plan_revision INTEGER NOT NULL DEFAULT 0, planner_task_id TEXT NOT NULL REFERENCES tasks(id),
+ authority TEXT NOT NULL, max_children INTEGER NOT NULL, max_tokens INTEGER,
+ max_attempts INTEGER NOT NULL, tokens_used INTEGER NOT NULL DEFAULT 0,
+ attempts_used INTEGER NOT NULL DEFAULT 0, planner_context_threshold INTEGER,
+ reason TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE workflow_plans(
+ workflow_id TEXT NOT NULL REFERENCES workflow_roots(id), revision INTEGER NOT NULL,
+ plan TEXT NOT NULL, plan_sha256 TEXT NOT NULL, state TEXT NOT NULL,
+ reason TEXT, created_at REAL NOT NULL, PRIMARY KEY(workflow_id,revision));
+CREATE TABLE workflow_children(
+ internal_id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflow_roots(id),
+ revision INTEGER NOT NULL, child_index INTEGER NOT NULL, child_key TEXT NOT NULL,
+ task_id TEXT NOT NULL REFERENCES tasks(id), dependencies TEXT NOT NULL,
+ delivery TEXT NOT NULL, carried_from_task_id TEXT, carried_output TEXT,
+ measurements TEXT NOT NULL DEFAULT '{}', context_bytes INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(workflow_id,revision,child_index), UNIQUE(workflow_id,revision,child_key));
+CREATE TABLE workflow_deliveries(
+ id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflow_roots(id),
+ source_task_id TEXT NOT NULL REFERENCES tasks(id), target_task_id TEXT NOT NULL REFERENCES tasks(id),
+ payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, bytes_count INTEGER NOT NULL,
+ state TEXT NOT NULL, error_message TEXT, created_at REAL NOT NULL, delivered_at REAL,
+ UNIQUE(workflow_id,source_task_id,target_task_id));
+CREATE TABLE schema_migrations(
+ version INTEGER PRIMARY KEY, state TEXT NOT NULL, intent_at REAL NOT NULL,
+ completed_at REAL, outcome TEXT);
+CREATE TABLE retention_intents(
+ task_id TEXT PRIMARY KEY, phase TEXT NOT NULL, artifact_paths TEXT NOT NULL,
+ created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE INDEX pending_tasks ON tasks(status,next_run_at);
 CREATE INDEX worker_reservations ON attempts(worker_id,reserved);
 CREATE INDEX task_events ON events(task_id,id);
-PRAGMA user_version=1;
+CREATE INDEX workflow_children_task ON workflow_children(task_id);
+CREATE INDEX workflow_deliveries_target ON workflow_deliveries(target_task_id);
+INSERT INTO schema_migrations(version,state,intent_at,completed_at,outcome)
+ VALUES(2,'complete',strftime('%s','now'),strftime('%s','now'),'initialized');
+PRAGMA user_version=2;
 """
 
 
@@ -93,9 +129,18 @@ class Store:
                 db.executescript(SCHEMA)
                 settings = {"workspace_root": str(root), "max_active": max_active,
                             "allow_write": bool(allow_write), "worker_ttl": 5.0,
-                            "observation_ttl": 5.0, "last_worker": ""}
+                            "observation_ttl": 5.0, "last_worker": "",
+                            "retention_seconds": 86400.0,
+                            "idempotency_horizon": 86400.0,
+                            "discovery_output_bytes": 64 * 1024,
+                            "discovery_timeout": 10.0}
                 db.executemany("INSERT INTO settings VALUES(?,?)",
                                [(k, canonical(v)) for k, v in settings.items()])
+                # Inventory is deliberately seeded during init without starting a
+                # runtime or making a provider request.  Active tiers are explicit
+                # Discovery operations, never an init side effect.
+                from .discovery import seed_passive_inventory
+                seed_passive_inventory(db, root)
         except sqlite3.Error as exc:
             # A half-written database must not make the next init report "Already initialized".
             for suffix in ("", "-wal", "-shm"):
@@ -110,16 +155,68 @@ class Store:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA synchronous=FULL")
+            # initialize() opens an empty, exclusively-created file.  All other
+            # callers get migration handling before either reads or writes.
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone():
+                self._migrate(db)
             return db
         except sqlite3.Error as exc:
             raise StorageError(f"Cannot open store: {exc}") from exc
+
+    @staticmethod
+    def _migration_tables(db):
+        db.execute("""CREATE TABLE IF NOT EXISTS schema_migrations(
+                     version INTEGER PRIMARY KEY, state TEXT NOT NULL,
+                     intent_at REAL NOT NULL, completed_at REAL, outcome TEXT)""")
+        db.execute("""CREATE TABLE IF NOT EXISTS retention_intents(
+                     task_id TEXT PRIMARY KEY, phase TEXT NOT NULL,
+                     artifact_paths TEXT NOT NULL, created_at REAL NOT NULL,
+                     updated_at REAL NOT NULL)""")
+
+    def _migrate(self, db):
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version > CURRENT_SCHEMA_VERSION or version < 1:
+            raise StorageError("Unsupported database schema version")
+        if version == CURRENT_SCHEMA_VERSION:
+            return
+        # The intent is committed independently.  If a process dies after this
+        # commit, the next opener sees it and resumes the same version exactly
+        # once under BEGIN IMMEDIATE.
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            self._migration_tables(db)
+            now = time.time()
+            db.execute("""INSERT INTO schema_migrations(version,state,intent_at,outcome)
+                        VALUES(2,'started',?, 'migration_intent')
+                        ON CONFLICT(version) DO UPDATE SET state='started', outcome='migration_intent'""", (now,))
+            db.commit()
+            db.execute("BEGIN IMMEDIATE")
+            # v1 had a foreign key from commands to tasks, which would make
+            # tombstone retention impossible. Rebuild only that table.
+            db.execute("""CREATE TABLE IF NOT EXISTS commands_new(
+                        id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
+                        kind TEXT NOT NULL, task_id TEXT NOT NULL,
+                        payload_hash TEXT NOT NULL, accepted_at REAL NOT NULL)""")
+            db.execute("""INSERT OR IGNORE INTO commands_new
+                        SELECT id,idempotency_key,kind,task_id,payload_hash,accepted_at FROM commands""")
+            db.execute("DROP TABLE commands")
+            db.execute("ALTER TABLE commands_new RENAME TO commands")
+            self._migration_tables(db)
+            db.execute("INSERT OR IGNORE INTO settings VALUES('retention_seconds','86400.0')")
+            db.execute("INSERT OR IGNORE INTO settings VALUES('idempotency_horizon','86400.0')")
+            db.execute("PRAGMA user_version=2")
+            db.execute("UPDATE schema_migrations SET state='complete', completed_at=?, outcome='migrated' WHERE version=2", (time.time(),))
+            db.commit()
+        except sqlite3.Error:
+            db.rollback()
+            raise
 
     @contextmanager
     def reading(self):
         """A consistent read snapshot. In WAL mode this never waits for, or blocks, a writer."""
         db = self.connect()
         try:
-            if db.execute("PRAGMA user_version").fetchone()[0] != 1:
+            if db.execute("PRAGMA user_version").fetchone()[0] != CURRENT_SCHEMA_VERSION:
                 raise StorageError("Unsupported database schema version")
             db.execute("BEGIN")
             yield db
@@ -134,7 +231,7 @@ class Store:
         """Serialized read-modify-write. Use reading() for anything that only observes."""
         db = self.connect()
         try:
-            if db.execute("PRAGMA user_version").fetchone()[0] != 1:
+            if db.execute("PRAGMA user_version").fetchone()[0] != CURRENT_SCHEMA_VERSION:
                 raise StorageError("Unsupported database schema version")
             db.execute("BEGIN IMMEDIATE")
             yield db
@@ -199,6 +296,94 @@ class Store:
                        (command_id, key, "submit", task_id, payload_hash, now))
             event(db, "task.accepted", task_id, command_id=command_id)
             return {"command_id": command_id, "task_id": task_id, "accepted_at": now, "duplicate": False}
+
+    def expire_artifacts(self, now=None):
+        """Expire old result bytes while retaining task and event history.
+
+        A workflow dependency is a durable reference, so its artifact is never
+        removed by this pass.  The task row intentionally remains queryable;
+        reading the missing path raises the distinct ``gone`` error.
+        """
+        now = time.time() if now is None else now
+        removed = []
+        with self.transaction() as db:
+            cfg = self.settings_from(db)
+            cutoff = now - cfg.get("retention_seconds", 86400.0)
+            rows = db.execute("""SELECT t.id,a.result_path FROM tasks t
+                              JOIN attempts a ON a.id=t.current_attempt_id
+                              WHERE t.status='Succeeded' AND t.finished_at<=?
+                              AND a.result_path IS NOT NULL""", (cutoff,)).fetchall()
+            for row in rows:
+                if db.execute("SELECT 1 FROM workflow_children WHERE task_id=?", (row["id"],)).fetchone():
+                    continue
+                path = self.home / row["result_path"]
+                path.unlink(missing_ok=True)
+                removed.append(row["id"])
+        return removed
+
+    def retain(self, now=None, stop_after=None):
+        """Apply resumable task retention and preserve live submit tombstones.
+
+        Each deletion phase commits independently.  ``stop_after`` is a
+        deterministic fault-injection hook used by acceptance tests; a crash
+        between phases leaves ``retention_intents`` for the next manager.
+        """
+        now = time.time() if now is None else now
+        completed = []
+        with self.transaction() as db:
+            cfg = self.settings_from(db)
+            cutoff = now - cfg.get("retention_seconds", 86400.0)
+            for task in db.execute("""SELECT id FROM tasks
+                                  WHERE status IN ('Succeeded','Failed','Cancelled')
+                                  AND finished_at IS NOT NULL AND finished_at<=?
+                                  AND NOT EXISTS (SELECT 1 FROM workflow_children w WHERE w.task_id=tasks.id)""", (cutoff,)):
+                if not db.execute("SELECT 1 FROM retention_intents WHERE task_id=?", (task["id"],)).fetchone():
+                    paths = [r[0] for r in db.execute("SELECT result_path FROM attempts WHERE task_id=? AND result_path IS NOT NULL", (task["id"],))]
+                    db.execute("INSERT INTO retention_intents VALUES(?,?,?,?,?)",
+                               (task["id"], "dependents", canonical(paths), now, now))
+        # Resume one intent at a time, with every phase durable.
+        while True:
+            with self.transaction() as db:
+                intent = db.execute("SELECT * FROM retention_intents ORDER BY created_at,task_id LIMIT 1").fetchone()
+                if intent is None:
+                    break
+                task_id, phase = intent["task_id"], intent["phase"]
+                if phase == "dependents":
+                    db.execute("DELETE FROM workflow_deliveries WHERE source_task_id=? OR target_task_id=?", (task_id, task_id))
+                    db.execute("DELETE FROM workflow_children WHERE task_id=?", (task_id,))
+                    db.execute("DELETE FROM outbox WHERE attempt_id IN (SELECT id FROM attempts WHERE task_id=?)", (task_id,))
+                    db.execute("DELETE FROM attempts WHERE task_id=?", (task_id,))
+                    db.execute("DELETE FROM events WHERE task_id=?", (task_id,))
+                    db.execute("UPDATE retention_intents SET phase='task',updated_at=? WHERE task_id=?", (now, task_id))
+                    phase = "task"
+                elif phase == "task":
+                    db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+                    db.execute("UPDATE retention_intents SET phase='artifact',updated_at=? WHERE task_id=?", (now, task_id))
+                    phase = "artifact"
+                elif phase == "artifact":
+                    for relative in json.loads(intent["artifact_paths"]):
+                        (self.home / relative).unlink(missing_ok=True)
+                    db.execute("DELETE FROM retention_intents WHERE task_id=?", (task_id,))
+                    completed.append(task_id)
+                    phase = "complete"
+                if stop_after == phase:
+                    break
+            if stop_after == phase:
+                break
+        # Tombstones are retained independently of task payloads until their
+        # own horizon, so late duplicate submissions remain harmless.
+        with self.transaction() as db:
+            horizon = cfg.get("idempotency_horizon", 86400.0)
+            db.execute("""DELETE FROM commands
+                        WHERE accepted_at + ? < ? AND NOT EXISTS
+                        (SELECT 1 FROM tasks WHERE tasks.id=commands.task_id)""", (horizon, now))
+        return {"deleted": completed, "pending": [r[0] for r in self._retention_pending()]}
+
+    def _retention_pending(self):
+        with self.reading() as db:
+            return db.execute("SELECT task_id FROM retention_intents ORDER BY task_id").fetchall()
+
+    retention = retain
 
     def cancel(self, task_id, key):
         self.key_check(key)
@@ -359,3 +544,53 @@ class Store:
                        ("operator_confirmed_stopped: " + note, time.time(), time.time(), attempt_id))
             event(db, "attempt.resolved", a["task_id"], attempt_id, note=note)
         return {"attempt_id": attempt_id, "resolution": "confirmed_stopped"}
+
+    # Workflow methods live in their own owning layer.  These small delegates keep
+    # the public Store boundary consistent with submit/task operations without
+    # importing the workflow module during legacy initialization.
+    def create_workflow(self, raw, key):
+        from .workflows import WorkflowStore
+        return WorkflowStore(self).create(raw, key)
+
+    def workflow(self, workflow_id):
+        from .workflows import WorkflowStore
+        return WorkflowStore(self).workflow(workflow_id)
+
+    def workflows(self):
+        from .workflows import WorkflowStore
+        return WorkflowStore(self).workflows()
+
+    def workflow_children(self, workflow_id, revision=None):
+        from .workflows import WorkflowStore
+        return WorkflowStore(self).children(workflow_id, revision)
+
+    def settle_workflow_plan(self, workflow_id, plan, *, replan=False):
+        from .workflows import WorkflowStore
+        return WorkflowStore(self).settle_plan(workflow_id, plan, replan=replan)
+
+    def deliver_workflow_dependencies(self, task_id):
+        from .workflows import WorkflowStore
+        return WorkflowStore(self).deliver_dependencies(task_id)
+
+    def replan_workflow(self, workflow_id, plan):
+        from .workflows import WorkflowStore
+        return WorkflowStore(self).replan(workflow_id, plan)
+
+    # Discovery is an independent, consent-aware boundary.  These delegates keep
+    # callers from importing an implementation detail while preserving the same
+    # Store transaction domain as tasks and workflows.
+    def discovery(self):
+        from .discovery import Discovery
+        return Discovery(self)
+
+    def discovery_inventory(self, routes=None):
+        return self.discovery().inventory(routes)
+
+    def discovery_approvals(self):
+        return self.discovery().approvals()
+
+    def discovery_evidence(self):
+        return self.discovery().evidence()
+
+    def discovery_audit(self):
+        return self.discovery().audit()

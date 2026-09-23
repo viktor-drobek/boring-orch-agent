@@ -21,6 +21,13 @@ All bodies and replies are JSON. Bodies may be at most 256,000 bytes. Unknown pa
 | `GET` | `/api/v1/tasks/{task_id}/result` | Validated result for a succeeded task only. |
 | `POST` | `/api/v1/tasks/{task_id}/cancel` | Request cancellation. Requires a distinct `Idempotency-Key`; returns `202`. |
 | `POST` | `/api/v1/attempts/{attempt_id}/resolve` | Operator resolution of an `Unknown` attempt. Requires `{"note":"evidence","confirm_stopped":true}`. |
+| `GET` | `/api/v1/sessions` | Durable native sessions, lineage and warm-up/recovery state. |
+| `GET` | `/api/v1/sessions/{session_id}` | One native session, including its read-only digest metadata. |
+| `GET` | `/api/v1/sessions/{session_id}/branches` | Deterministic child branches for one parent session. |
+| `GET` | `/api/v1/native/jobs` | Registered native jobs and their readiness state. This route does not launch jobs. |
+| `POST` | `/api/v1/native/jobs` | Atomically register one `acp` or `coddy_native` job with a required model. |
+| `POST` | `/api/v1/native/workflows` | Atomically register a dependency graph from `{"jobs":[...]}`. |
+| `GET` | `/api/v1/native/runs` | Native run history with session IDs and recovery evidence. |
 
 Use one durable key for each logical command. Resending the same request and key returns the original receipt with `duplicate: true`; reusing a key for a different command or payload returns `409 conflict`. A submit receipt only proves durable acceptance, never successful execution.
 

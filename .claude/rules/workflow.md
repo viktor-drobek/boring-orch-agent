@@ -6,6 +6,20 @@ Before reporting work, run `python tools/pipeline.py`. It is the release gate: a
 
 Update examples and API documentation when a public task schema, API route, CLI response, or task state meaning changes.
 
+## Operational jobs through exec
+
+Follow `AGENTS.md` and `boring_agent/memory/.agents/references/exec.md` (paths relative to repository root). The parent verifies readiness and the job selector, then calls `spawn_agent(model=job.model)`. Exec reads the whole approved job itself and performs it with permitted native Coddy tools. No execution adapters, manager/worker services, intermediate submissions, nested Coddy processes or direct provider HTTP. Legacy runtime tests remain allowed offline.
+
+Launch only READY jobs with satisfied dependencies and an available execution slot, never waiting supervisors. Reassess remaining independent jobs after each verified outcome. Supply absolute job/workspace paths, hash, native run ID, selected_model, permissions, budgets, acceptance criteria and result recipient. Use background execution with parent notification/supervision. Unknown needs an operator decision without automatic replay. The parent owns independent idle observation and escalation after >1800s; a hung child cannot monitor itself. `/model --count` is not a job-step budget and is not an executable child tool. Keep native run results separate from immutable legacy Store history.
+
+## Native session lifecycle
+
+Native jobs may use an exact `@session:<id>` mention. Coddy resolves it as a read-only digest attachment capped at 24 KiB, never as a live child connection. The lifecycle store records sessions, lineage, job links, run history, transfers, branches and recovery evidence atomically in `lifecycle_*` SQLite tables.
+
+A new session runs `/compact` followed by `/rpa-init` before its first job, using a model with at least 100,000 context tokens (`ndsub/qwen3.8-27b`, 262,144 by default). Warm-up time counts against the job deadline. Stable idempotency keys prevent duplicate confirmed steps; an uncertain external outcome becomes `recovering` and needs operator-confirmed retry with the same key.
+
+A linear dependent may reuse a completed session only sequentially. A 1-to-N fan-out creates independent child sessions with shared lineage, so concurrent jobs never share a live session. Transfers contain only the verified result and read-only session mention. Restart recovery preserves evidence and never automatically replays an unknown run or transfer. Native lifecycle history remains separate from legacy `llm`/`demo` task history.
+
 ## Rules Sync
 
 **MANDATORY** — if any rule or agent-instruction file changes, mirror it in the same commit across `AGENTS.md` / `CLAUDE.md`, `.cursor/rules/`, `.claude/rules/`, `.codex/rules.md`, and `.coddy/rules/`. Keep Cursor and Claude topic bodies equivalent, adapt only frontmatter, refresh the Codex index when topics change, and verify `CLAUDE.md` remains a symlink to `AGENTS.md`.

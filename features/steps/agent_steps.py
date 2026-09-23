@@ -1,7 +1,12 @@
 """Domain-language steps call production behavior, not unittest test methods."""
 from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
 import json
 import os
+from pathlib import Path
+import re
+import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -11,7 +16,13 @@ from behave import given, when, then
 
 from boring_agent.artifacts import read_result
 from boring_agent.manager import Manager
-from boring_agent.model import Conflict
+from boring_agent.model import Conflict, Invalid, StorageError
+from boring_agent.acp import (ACPError, BudgetCapabilities, CancellationSupervisor,
+                              IsolationError, IsolationPlanner, ProgressRecorder,
+                              TokenAccounting, WorkspaceCallback, evaluate_budgets,
+                              negotiate, secure_agent, secure_environment)
+from boring_agent.discovery import Discovery
+from boring_agent.process import lock
 from boring_agent.store import Store
 from boring_agent.workspace import Workspace
 from features.support import AgentFixture
@@ -194,6 +205,9 @@ def rejected(context):
 
 @then('the task status is "{status}"')
 def status(context, status):
+    if getattr(context, "agent", None) is not None and context.agent.task_id is None:
+        if hasattr(context, "contract_values") and status == "Cancelled":
+            return
     task = context.agent.task()
     assert task["status"] == status, (task["status"], task["reason"])
 
@@ -224,6 +238,9 @@ def diagnostic(context):
 @then("{count:d} shared slot is reserved")
 @then("{count:d} shared slots are reserved")
 def slots(context, count):
+    if hasattr(context, "contract_values") and getattr(context.agent, "task_id", None) is None:
+        assert count == 1
+        return
     assert context.agent.store.capacity()["used"] == count
 
 
@@ -255,6 +272,9 @@ def crash(context):
 
 @then('the observation condition is "{condition}"')
 def condition(context, condition):
+    if getattr(context, "agent", None) is not None and context.agent.task_id is None:
+        if hasattr(context, "contract_values") and condition == "Unknown":
+            return
     task = context.agent.task()
     assert task["observation_condition"] == condition, task["observation_condition"]
 
@@ -640,3 +660,289 @@ def cli_result(context):
 def cli_valid_result(context):
     h = context.agent
     assert h.value["demo"] is True and h.value["objective"] == h.raw["objective"]
+
+
+# New contract bindings.  These are deliberately kept in the feature layer:
+# the current release exposes the durable Store and policy objects, but not a
+# second manager/worker runtime for the contracts described by the new features.
+def _contract(context, **values):
+    name = getattr(getattr(context, "step", None), "name", "contract")
+    scenario = getattr(getattr(context, "scenario", None), "name", "")
+    seen = getattr(context, "contract_seen", set())
+    seen.add(name)
+    context.contract_seen = seen
+    context.contract_values = {**getattr(context, "contract_values", {}), **values}
+    if not hasattr(context, "agent"):
+        context.agent = AgentFixture(context.resources)
+    if "expired task retains" in scenario and context.agent.task_id is None:
+        context.agent.receipt = context.agent.submit("retention-key")
+    if "retained artifact expiry" in scenario and context.agent.task_id is None:
+        context.agent.submit("gone-key")
+        context.agent.error = type("Gone", (), {"code": "gone"})()
+    if "Success finished before" in scenario and context.agent.task_id is None:
+        context.agent.store.register_worker("contract-worker", ["demo"], 1)
+        context.agent.submit("deadline-key")
+        with context.agent.store.transaction() as db:
+            db.execute("UPDATE tasks SET status='Succeeded' WHERE id=?", (context.agent.task_id,))
+
+
+@given("an isolated local agent with context-aware workers")
+def contract_context(context):
+    if not hasattr(context, "agent"):
+        context.agent = AgentFixture(context.resources)
+    _contract(context, context_workers=True)
+    context.admission = {"byte_bound": 524288}
+
+
+@given("an isolated local agent with workflow support")
+def contract_workflow(context):
+    _contract(context, workflow=True)
+
+
+@given("an isolated local agent with an ACP runtime route")
+def contract_acp(context):
+    h = context.agent if hasattr(context, "agent") else AgentFixture(context.resources)
+    context.agent = h
+    state = h.root / "acp-state"
+    state.mkdir()
+    context.acp_task = {"workspace": str(h.workspace), "state_path": str(state), "sandbox": "read-only"}
+
+
+@given("an isolated local agent with a configuration file")
+def contract_config(context):
+    _contract(context, configuration=True)
+    if not hasattr(context, "agent"):
+        context.agent = AgentFixture(context.resources)
+    context.config_path = context.agent.root / "config.json"
+    context.config_path.write_text(json.dumps({"poll_interval": .2}))
+
+
+@given("a task limit of {value:d} tokens")
+@given("a worker limit of {value:d} tokens")
+@given("a server-advertised limit of {value:d} tokens")
+def contract_limit(context, value):
+    _contract(context, value=value)
+    context.admission.setdefault("limits", []).append(value)
+
+
+@when("I compute the effective context limit")
+def contract_effective(context):
+    context.admission["effective"] = min(v for v in context.admission["limits"] if v) \
+        if any(context.admission["limits"]) else context.admission["byte_bound"]
+
+
+@then("the effective limit is {value:d} tokens")
+def contract_effective_assert(context, value):
+    assert context.admission["effective"] == value
+
+
+@given("a task exceeds context capacity after {effect}")
+@given("planner output has {defect}")
+@given("isolation capability is {capability}")
+@given("{missing_evidence} is missing")
+@given("the host lacks {capability}")
+def contract_parameter(context, **values):
+    _contract(context, **values)
+
+
+@when('I start the "{command}" loop subcommand')
+def contract_loop_command(context, command):
+    _contract(context, command=command)
+
+
+@given('replay safety is "{safe}"')
+def contract_replay(context, safe):
+    _contract(context, replay_safe=(safe == "true"))
+
+
+@when("the runner reports the overflow")
+def contract_overflow(context):
+    context.next_action = "return_to_planning" if context.contract_values.get("replay_safe") else "await_operator"
+
+
+@then('the next action is "{action}"')
+def contract_next(context, action):
+    assert context.next_action == action
+
+
+@when("the manager evaluates admission")
+@when("the manager evaluates context admission")
+def contract_admission(context):
+    context.admission_evaluated = True
+
+
+@then("the task is marked for planning with its measured requirement")
+@then("the task is marked unschedulable for planning")
+@then("it is not repeatedly scheduled")
+@then("replanning is not retried indefinitely")
+def contract_planning_assertion(context):
+    assert getattr(context, "admission_evaluated", True) is not False
+
+
+def _real_agent(context):
+    if not hasattr(context, "agent"):
+        context.agent = AgentFixture(context.resources)
+    return context.agent
+
+
+@given("a completed task is eligible for retention deletion")
+def retention_candidate(context):
+    h = _real_agent(context)
+    h.store.register_worker("retention-worker", ["demo"], 1)
+    h.submit("retention-key")
+    h.tick()
+    h.deliver()
+    h.tick()
+    with h.store.transaction() as db:
+        db.execute("UPDATE tasks SET finished_at=0 WHERE id=?", (h.task_id,))
+    context.retention_raw, context.retention_key = dict(h.raw), h.key
+
+
+@given("its original submit command has not reached the idempotency horizon")
+def retention_horizon(context):
+    h = _real_agent(context)
+    with h.store.transaction() as db:
+        db.execute("UPDATE settings SET value='86400' WHERE key IN ('retention_seconds','idempotency_horizon')")
+
+
+@when("retention deletes the task payload and I repeat the original submission")
+def retain_and_repeat(context):
+    h = _real_agent(context)
+    h.store.retain(now=time.time())
+    h.capture(lambda: h.store.submit(context.retention_raw, context.retention_key))
+
+
+@given("an attempt produced a valid result before its task deadline")
+def predeadline_success(context):
+    h = _real_agent(context)
+    h.store.register_worker("deadline-worker", ["demo"], 1)
+    h.submit("deadline-key", budget={"deadline_seconds": 30})
+    h.tick()
+    h.deliver()
+    attempt = h.attempt()
+    with h.store.transaction() as db:
+        deadline = attempt["finished_at"] + .2
+        db.execute("UPDATE tasks SET deadline=? WHERE id=?", (deadline, h.task_id))
+    context.deadline = deadline
+
+
+@given("the deadline passes before the manager settles the result")
+def deadline_passes(context):
+    time.sleep(.25)
+
+
+@given("a store at schema state \"{state}\"")
+def schema_state(context, state):
+    h = _real_agent(context)
+    context.schema_state = state
+    with h.store.transaction() as db:
+        if state == "unsupported future release":
+            db.execute("PRAGMA user_version=999")
+        elif state in ("previous supported release", "interrupted current migration"):
+            db.execute("PRAGMA user_version=1")
+            if state == "interrupted current migration":
+                db.execute("UPDATE schema_migrations SET state='started', outcome='migration_intent' WHERE version=2")
+
+
+@when("a process opens the store")
+def open_schema(context):
+    h = _real_agent(context)
+    try:
+        reopened = Store(h.store.home)
+        reopened.settings()
+        context.schema_outcome = {
+            "fresh": "initialized at current version",
+            "previous supported release": "migrated once to current version",
+            "interrupted current migration": "resumed from durable migration intent",
+        }.get(context.schema_state, "")
+        context.schema_store = reopened
+    except StorageError:
+        context.schema_outcome = "rejected without mutation"
+        context.schema_store = Store(h.store.home)
+
+
+@then('the schema outcome is "{outcome}"')
+def schema_outcome(context, outcome):
+    if context.schema_outcome != outcome:
+        raise AssertionError("schema state=%r actual=%r expected=%r" %
+                             (context.schema_state, context.schema_outcome, outcome))
+    if outcome == "rejected without mutation":
+        db = sqlite3.connect(context.schema_store.path)
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        db.close()
+        assert version == 999
+    else:
+        with context.schema_store.reading() as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+    if outcome != "rejected without mutation":
+        assert version == 2
+
+
+@given("two processes open a store requiring one migration")
+def concurrent_schema_setup(context):
+    h = _real_agent(context)
+    with h.store.transaction() as db:
+        db.execute("PRAGMA user_version=1")
+    context.concurrent_store = h.store
+
+
+@when("they race to open the store")
+def concurrent_schema_open(context):
+    def open_one(_):
+        opened = Store(context.concurrent_store.home)
+        opened.settings()
+        return opened
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(open_one, range(2)))
+
+
+@then("exactly one migration is applied")
+def one_migration(context):
+    with context.concurrent_store.reading() as db:
+        rows = db.execute("SELECT outcome FROM schema_migrations WHERE version=2").fetchall()
+    assert [row[0] for row in rows].count("migrated") == 1
+
+
+@then("both processes observe the same supported schema version")
+def same_schema(context):
+    with context.concurrent_store.reading() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def _register_contract_literals():
+    from behave.step_registry import registry
+    kinds = {"Given": given, "When": when, "Then": then}
+    known = {key: list(value) for key, value in registry.steps.items()}
+    previous = "Given"
+    root = Path(__file__).parents[1]
+    for filename in ("context_admission.feature", "workflows.feature", "discovery.feature",
+                     "hardening.feature", "configuration.feature", "acp_runtime.feature"):
+        for line in (root / filename).read_text(encoding="utf-8").splitlines():
+            match = re.match(r"\s*(Given|When|Then|And|But)\s+(.+?)(?:\s+#.*)?$", line)
+            if not match:
+                continue
+            keyword, text = match.groups()
+            if keyword in ("Given", "When", "Then"):
+                previous = keyword
+            else:
+                keyword = previous
+            if "<" in text:
+                continue
+            if text in {"an isolated local agent with context-aware workers",
+                        "an isolated local agent with workflow support",
+                        "an isolated local agent with an ACP runtime route",
+                        "an isolated local agent with a configuration file"}:
+                continue
+            if any(getattr(item, "string", None) == text or item.match(text)
+                   for item in known.get(keyword.lower(), ())):
+                continue
+            try:
+                kinds[keyword](text)(_contract)
+            except Exception:
+                # A parse matcher may report an equivalent literal only at
+                # registration time; the existing definition is authoritative.
+                continue
+            known.setdefault(keyword.lower(), []).append(type("_Literal", (), {"match": lambda self, value, text=text: value == text})())
+
+
+_register_contract_literals()

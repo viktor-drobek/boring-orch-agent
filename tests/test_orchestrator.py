@@ -7,10 +7,12 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
 
+import boring_agent.manager as manager_module
 from boring_agent.artifacts import read_result
 from boring_agent.manager import Manager
 from boring_agent.model import Conflict, Invalid, NotFound, StorageError, strict_json
@@ -214,6 +216,89 @@ class StoreCase(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, "checksum"):
             read_result(self.store, task["attempts"][0], task["spec"])
 
+    def _succeeded_attempt_awaiting_settlement(self):
+        task_id = self.submit()
+        self.manager.tick()
+        attempt = self.store.task(task_id)["attempts"][0]
+        run_attempt(self.store, attempt["id"], "w")
+        return task_id
+
+    def test_artifact_validation_releases_writer_for_submit_and_heartbeat(self):
+        task_id = self._succeeded_attempt_awaiting_settlement()
+        entered = threading.Event()
+        release = threading.Event()
+        original = manager_module.prevalidate_result
+
+        def blocked(*args, **kwargs):
+            verdict = original(*args, **kwargs)
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return verdict
+
+        with patch.object(manager_module, "prevalidate_result", blocked):
+            thread = threading.Thread(target=self.manager.tick)
+            thread.start()
+            self.assertTrue(entered.wait(2))
+            started = time.monotonic()
+            submitted = Store(self.store.home).submit({"objective": "concurrent", "runtime": "demo"}, "concurrent")
+            Store(self.store.home).heartbeat_worker("w")
+            self.assertLess(time.monotonic() - started, 2)
+            release.set()
+            thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.store.task(task_id)["status"], "Succeeded")
+        self.ids.append(submitted["task_id"])
+
+    def test_stale_prevalidated_verdict_never_accepts_changed_identity(self):
+        mutations = ("artifact", "path", "checksum", "spec", "intent")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                task_id = self._succeeded_attempt_awaiting_settlement()
+                entered = threading.Event()
+                release = threading.Event()
+                original = manager_module.prevalidate_result
+
+                def blocked(*args, **kwargs):
+                    verdict = original(*args, **kwargs)
+                    entered.set()
+                    self.assertTrue(release.wait(2))
+                    return verdict
+
+                with patch.object(manager_module, "prevalidate_result", blocked):
+                    thread = threading.Thread(target=self.manager.tick)
+                    thread.start()
+                    self.assertTrue(entered.wait(2))
+                    task = self.store.task(task_id)
+                    attempt = task["attempts"][0]
+                    artifact = self.store.home / attempt["result_path"]
+                    if mutation == "artifact":
+                        artifact.write_text('{"changed":true}')
+                    elif mutation == "path":
+                        with self.store.transaction() as db:
+                            db.execute("UPDATE attempts SET result_path='artifacts/changed.json' WHERE id=?",
+                                       (attempt["id"],))
+                    elif mutation == "checksum":
+                        with self.store.transaction() as db:
+                            db.execute("UPDATE attempts SET result_sha256='changed' WHERE id=?",
+                                       (attempt["id"],))
+                    elif mutation == "spec":
+                        changed = dict(task["spec"])
+                        changed["objective"] = "changed after validation"
+                        with self.store.transaction() as db:
+                            db.execute("UPDATE tasks SET spec=? WHERE id=?",
+                                       (json.dumps(changed, sort_keys=True, separators=(",", ":")), task_id))
+                    else:
+                        self.store.cancel(task_id, "stale-intent-" + task_id)
+                    release.set()
+                    thread.join(timeout=2)
+                self.assertFalse(thread.is_alive())
+                final = self.store.task(task_id)
+                self.assertNotEqual(final["status"], "Succeeded" if mutation != "intent" else "Succeeded")
+                if mutation == "intent":
+                    self.assertEqual(final["status"], "Cancelled")
+                else:
+                    self.assertEqual(final["status"], "Failed")
+
     def test_unresolvable_schema_is_rejected_without_crashing_manager(self):
         task_id = self.submit(output_schema={"$ref": "#/$defs/missing"})
         self.assertEqual(self.execute_attempt(task_id)["status"], "Failed")
@@ -392,9 +477,49 @@ class StoreCase(unittest.TestCase):
             db.execute("PRAGMA user_version=999")
         with self.assertRaises(StorageError):
             self.store.settings()
-        db = self.store.connect()
+        # An unsupported future schema is intentionally rejected before Store
+        # can return a managed connection; reset the fixture through SQLite
+        # directly so teardown can continue on the supported version.
+        db = sqlite3.connect(self.store.path)
         db.execute("PRAGMA user_version=1")
         db.close()
+
+    def test_retention_keeps_submit_tombstone_after_task_deletion(self):
+        raw = {"objective": "Test a durable task", "runtime": "demo", "demo": {"delay_seconds": 0}}
+        receipt = self.store.submit(raw, "retention-unit")["task_id"]
+        with self.store.transaction() as db:
+            db.execute("UPDATE tasks SET status='Succeeded', finished_at=0 WHERE id=?", (receipt,))
+        result = self.store.retain(now=time.time())
+        self.assertEqual(result["deleted"], [receipt])
+        duplicate = self.store.submit(raw, "retention-unit")
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(duplicate["task_id"], receipt)
+        self.assertEqual(self.store.tasks(), [])
+
+    def test_future_schema_rejection_does_not_mutate_database(self):
+        with self.store.transaction() as db:
+            db.execute("PRAGMA user_version=999")
+        with self.assertRaises(StorageError):
+            self.store.settings()
+        db = sqlite3.connect(self.store.path)
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 999)
+        db.execute("PRAGMA user_version=2")
+        db.commit()
+        db.close()
+
+    def test_concurrent_openers_complete_one_durable_migration(self):
+        with self.store.transaction() as db:
+            db.execute("PRAGMA user_version=1")
+
+        def open_store(_):
+            opened = Store(self.store.home)
+            opened.settings()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(open_store, range(2)))
+        with self.store.reading() as db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM schema_migrations WHERE outcome='migrated'").fetchone()[0], 1)
 
     def test_single_manager_lock(self):
         with lock(self.store.home, "manager"):
