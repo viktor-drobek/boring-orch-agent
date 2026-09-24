@@ -15,6 +15,8 @@ REQUIRED_ASSETS = (
     ".claude-plugin/plugin.json",
     ".cursor/rules/architecture.mdc",
     ".claude/rules/architecture.md",
+    ".claude/agents/boring-agent.md",
+    ".claude/agents/exec.md",
     ".codex/rules.md",
     "docs/architecture.md",
     "examples/coddy/README.md",

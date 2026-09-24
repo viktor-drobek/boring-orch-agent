@@ -98,6 +98,24 @@ repository root loads `CLAUDE.md` (a symlink to `AGENTS.md`) and every
 Claude frontmatter, so do not replace them with symlinks to the `.mdc` files:
 Cursor `globs:` frontmatter is not read by Claude Code.
 
+### Project agent and exec subagent
+
+`.claude/agents/boring-agent.md` is the Claude Code counterpart of the Coddy
+project agent. It is a read-only coordinator (`Agent`, `Read`, `Grep`, `Glob`)
+that plans and reviews, and delegates every implementation, test, build,
+packaging and release step to the `exec` subagent in `.claude/agents/exec.md`.
+Neither definition pins a model or permission mode; both are inherited from
+the session. Run the coordinator as the main session so it can spawn `exec`:
+
+```bash
+claude --agent boring-agent
+```
+
+If the session cannot spawn `exec`, the coordinator reports `BLOCKED` instead
+of doing the work itself. The Claude `exec` handles development jobs only;
+native operational jobs from `docs/exec.md` still run through Coddy `exec`, and
+the Claude `exec` returns `BLOCKED` for them.
+
 `.claude/settings.json` pre-approves the read-only and test commands used by
 the development workflow. Put personal overrides in the git-ignored
 `.claude/settings.local.json`.
@@ -164,3 +182,4 @@ same commit per the [Rules Sync](AGENTS.md#rules-sync) contract:
 - `.codex/rules.md`
 - `.coddy/rules/*.md`
 - `.coddy/agents/*.md`
+- `.claude/agents/boring-agent.md` (shares the Coddy agent's project brief paragraphs; only the delegation section is tool-specific)
