@@ -86,6 +86,92 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertEqual(self.lifecycle.session(job["session_id"])["state"], "ready")
         self.assertEqual(self.warm(job["session_id"]), [])
 
+    def test_catalog_uses_requested_model_when_qualified_and_never_invents_one(self):
+        requested = SessionLifecycle(self.store, {"configured/model": {"max_context_tokens": 131072}})
+        self.assertEqual(requested.choose_warmup_model("configured/model"),
+                         ("configured/model", 131072))
+        alternate = SessionLifecycle(self.store, {
+            "configured/model": {"max_context_tokens": 32768},
+            "available/large": {"max_context_tokens": 200000},
+        })
+        self.assertEqual(alternate.choose_warmup_model("configured/model"),
+                         ("available/large", 200000))
+        with self.assertRaisesRegex(Invalid, "No configured warm-up model"):
+            SessionLifecycle(self.store, {
+                "configured/model": {"max_context_tokens": 32768},
+            }).choose_warmup_model("configured/model")
+        with self.assertRaisesRegex(Invalid, "No configured warm-up model"):
+            SessionLifecycle(self.store, {}).choose_warmup_model("configured/model")
+
+    def test_generated_session_ids_are_valid_coddy_session_ids(self):
+        session = self.lifecycle.create_session(model="fixture/model", cwd=str(self.workspace))
+        self.assertRegex(session["id"], r"^sess_[0-9a-f]{24}$")
+
+    def test_prepared_remote_session_is_adopted_without_running_warmup_commands(self):
+        session_id = "sess_0123456789abcdef01234567"
+        self.lifecycle.ensure_session(session_id=session_id, model="fixture/model",
+                                      cwd=str(self.workspace), permission_mode="accept_edits")
+        adopted = self.lifecycle.adopt_prepared_session(
+            session_id, successful_steps=("/compact", "/rpa-init"), evidence_count=2,
+        )
+        self.assertEqual(adopted.steps, ())
+        self.assertEqual(self.lifecycle.session(session_id)["state"], "ready")
+        calls = []
+        self.lifecycle.warm_session(session_id, lambda *args: calls.append(args))
+        self.assertEqual(calls, [])
+        events = self.lifecycle.events("session", session_id)
+        adopted_event = next(event for event in events if event["kind"] == "session.warmup.adopted")
+        self.assertEqual(adopted_event["details"]["evidence_count"], 2)
+
+    def test_remote_session_without_both_ordered_successes_is_not_adopted(self):
+        session_id = "sess_0123456789abcdef01234567"
+        self.lifecycle.ensure_session(session_id=session_id, model="fixture/model",
+                                      cwd=str(self.workspace), permission_mode="accept_edits")
+        for evidence in (("/compact",), ("/rpa-init", "/compact"), ()):
+            with self.subTest(evidence=evidence), self.assertRaisesRegex(Invalid, "explicit successful"):
+                self.lifecycle.adopt_prepared_session(
+                    session_id, successful_steps=evidence, evidence_count=len(evidence),
+                )
+
+    def test_only_an_explicitly_resumed_session_may_inherit_bypass(self):
+        session_id = "sess_0123456789abcdef01234567"
+        session = self.lifecycle.ensure_session(
+            session_id=session_id, model="fixture/model", cwd=str(self.workspace),
+            permission_mode="bypass", inherited_permission=True,
+        )
+        self.assertEqual(session["permission_mode"], "bypass")
+        with self.assertRaisesRegex(Invalid, "bypass"):
+            self.lifecycle.ensure_session(
+                session_id=session_id, model="fixture/model", cwd=str(self.workspace),
+                permission_mode="bypass", inherited_permission=False,
+            )
+        with self.assertRaisesRegex(Invalid, "bypass"):
+            self.lifecycle.ensure_session(
+                session_id="sess_89abcdef0123456701234567", model="fixture/model",
+                cwd=str(self.workspace), permission_mode="bypass",
+            )
+
+    def test_retry_after_rpa_init_failure_does_not_repeat_successful_compact(self):
+        job = self.lifecycle.register_job(self.job("partial-warmup"))
+        session_id = job["session_id"]
+        first_calls = []
+
+        def fail_init(command, model, received_session, key):
+            first_calls.append((command, key))
+            if command == "/rpa-init":
+                raise RuntimeError("temporary init failure")
+            return True
+
+        with self.assertRaises(SessionConflict):
+            self.lifecycle.warm_session(session_id, fail_init)
+        self.assertEqual([call[0] for call in first_calls], ["/compact", "/rpa-init"])
+        retry_calls = []
+        self.lifecycle.retry_warmup(
+            session_id, lambda *args: retry_calls.append(args) or True,
+        )
+        self.assertEqual([call[0] for call in retry_calls], ["/rpa-init"])
+        self.assertEqual(retry_calls[0][3], f"warmup:{session_id}:/rpa-init")
+
     def test_linear_dependency_reuses_completed_session_and_records_transfer(self):
         root = self.lifecycle.register_job(self.job("root"))
         child = self.lifecycle.register_job(self.job("child", dependencies=["root"]))

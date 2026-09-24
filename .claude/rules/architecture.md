@@ -4,4 +4,6 @@
 
 Preserve these boundaries. A submit receipt means durable intent, not completed work. An ambiguous remote call remains `Unknown` and retains its reservation until independently resolved.
 
+Keep legacy providers isolated by kind. `openai`, `anthropic`, and `ollama` are stateless completion adapters. `coddy` alone owns the session-aware `POST /v1/responses` path, stable `X-Coddy-Session-ID`, SSE completion checks, durable `/compact` then `/rpa-init` warm-up, and `@agent:<name>` serialization for `spawn_agent`. A child permission mode inherits from the Coddy session and may only narrow it. Do not move this state into the stateless adapters or accept provider URLs and secrets from task JSON.
+
 Dependencies flow from outer layers to established inner layers only. Implement and test each lower layer before adding behavior to a dependent layer. Never introduce an upward dependency or bypass a lower-layer invariant from an adapter.

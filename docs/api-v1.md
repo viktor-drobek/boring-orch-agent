@@ -1,6 +1,6 @@
 # API v1
 
-The service is started with `boring-orch-agent --home .boa serve`. It has no execution loop of its own: run one manager and at least one worker against the same `--home` directory.
+The service is started with `boring-agent --home .boa serve`. It has no execution loop of its own: run one manager and at least one worker against the same `--home` directory.
 
 By default it listens on `127.0.0.1:8088`. A non-loopback listener is rejected unless a bearer token is configured with `--auth-token` or `BOA_API_TOKEN`. When a token is configured, every route requires `Authorization: Bearer <token>`.
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import secrets
 import time
 import uuid
 from typing import Callable, Iterable, Mapping
@@ -164,6 +165,7 @@ class SessionLifecycle:
 
     def __init__(self, store, model_contexts: Mapping[str, int | Mapping[str, int]] | None = None):
         self.store = store
+        self.model_catalog_supplied = model_contexts is not None
         self.model_contexts = dict(model_contexts or {})
         self._ensure_schema()
 
@@ -241,16 +243,13 @@ class SessionLifecycle:
         requested_context = self._context_tokens(requested_model)
         if requested_context is not None and requested_context >= MIN_WARMUP_CONTEXT_TOKENS:
             return requested_model, requested_context
-        configured = self._context_tokens(DEFAULT_WARMUP_MODEL)
-        if configured is None:
-            configured = DEFAULT_WARMUP_CONTEXT_TOKENS
-        if configured < MIN_WARMUP_CONTEXT_TOKENS:
+        if self.model_catalog_supplied:
             candidates = [(name, self._context_tokens(name)) for name in self.model_contexts]
             candidates = [(name, size) for name, size in candidates if size and size >= MIN_WARMUP_CONTEXT_TOKENS]
             if not candidates:
                 raise Invalid("No configured warm-up model has a context window of at least 100000 tokens")
             return sorted(candidates, key=lambda item: (-item[1], item[0]))[0]
-        return DEFAULT_WARMUP_MODEL, configured
+        return DEFAULT_WARMUP_MODEL, DEFAULT_WARMUP_CONTEXT_TOKENS
 
     @staticmethod
     def _validate_digest(value: str) -> str:
@@ -281,7 +280,7 @@ class SessionLifecycle:
             lineage_id = lineage_id or parent["lineage_id"]
             if not digest_text:
                 digest_text = parent["digest"]
-        session_id = session_id or str(uuid.uuid4())
+        session_id = session_id or "sess_" + secrets.token_hex(12)
         lineage_id = lineage_id or session_id
         warmup_model, warmup_context = self.choose_warmup_model(requested_model)
         now = time.time()
@@ -309,6 +308,49 @@ class SessionLifecycle:
                 permission_mode=permission_mode, scheduler_job_id=scheduler_job_id,
                 subagent_run=subagent_run, session_id=session_id, digest_text=digest_text,
             )
+            return self._decode_session(self._session_locked(db, created))
+
+    def ensure_session(self, *, session_id: str, model: str, cwd: str, mode: str = "agent",
+                       permission_mode: str = DEFAULT_PERMISSION_MODE,
+                       scheduler_job_id: str | None = None,
+                       inherited_permission: bool = False) -> dict:
+        """Create transport metadata once or return the matching durable session."""
+        if not inherited_permission and ("bypass" in permission_mode.lower() or
+                                         "skip" in permission_mode.lower()):
+            raise Invalid("a native session may not bypass its agent's permission system")
+        with self.store.transaction() as db:
+            existing = db.execute("SELECT * FROM lifecycle_sessions WHERE id=?", (session_id,)).fetchone()
+            if existing is not None:
+                expected = {"model": model, "cwd": str(Path(cwd).resolve()), "mode": mode,
+                            "permission_mode": permission_mode}
+                for name, value in expected.items():
+                    if existing[name] != value:
+                        if name == "permission_mode":
+                            if ("bypass" in value.lower() or "skip" in value.lower()) and not inherited_permission:
+                                raise Invalid("a native session may not bypass its agent's permission system")
+                            db.execute("UPDATE lifecycle_sessions SET permission_mode=?,revision=revision+1,updated_at=? WHERE id=?",
+                                       (value, time.time(), session_id))
+                            self._event(db, "session", session_id, "session.permission_inherited",
+                                        permission_mode=value)
+                            existing = self._session_locked(db, session_id)
+                            continue
+                        raise SessionConflict(
+                            f"Lifecycle session {session_id} already has different {name}"
+                        )
+                return self._decode_session(existing)
+            stored_permission = (DEFAULT_PERMISSION_MODE if inherited_permission and
+                                 ("bypass" in permission_mode.lower() or "skip" in permission_mode.lower())
+                                 else permission_mode)
+            created = self._insert_session_locked(
+                db, requested_model=model, cwd=str(Path(cwd).resolve()), mode=mode,
+                permission_mode=stored_permission, scheduler_job_id=scheduler_job_id,
+                session_id=session_id,
+            )
+            if stored_permission != permission_mode:
+                db.execute("UPDATE lifecycle_sessions SET permission_mode=? WHERE id=?",
+                           (permission_mode, session_id))
+                self._event(db, "session", session_id, "session.permission_inherited",
+                            permission_mode=permission_mode)
             return self._decode_session(self._session_locked(db, created))
 
     def session(self, session_id: str) -> dict:
@@ -538,6 +580,28 @@ class SessionLifecycle:
                 self._prepare_dependents_locked(db, row["id"])
             return [self._decode_job(row) for row in db.execute(
                 "SELECT * FROM lifecycle_jobs WHERE state='ready' ORDER BY created_at,id")]
+
+    def adopt_prepared_session(self, session_id: str, *, successful_steps: Iterable[str],
+                               evidence_count: int) -> WarmupResult:
+        """Record that an explicit remote session already contains prepared context."""
+        steps = tuple(successful_steps)
+        if steps != WARMUP_STEPS or isinstance(evidence_count, bool) or not isinstance(evidence_count, int):
+            raise Invalid("a prepared session requires explicit successful /compact then /rpa-init evidence")
+        with self.store.transaction() as db:
+            row = self._session_locked(db, session_id)
+            if (row["state"] == "ready" and row["compact_status"] == "succeeded" and
+                    row["rpa_init_status"] == "succeeded"):
+                return WarmupResult(session_id, row["warmup_model"], ())
+            if row["state"] != "new":
+                raise SessionConflict(f"Session cannot adopt remote preparation from state {row['state']}")
+            db.execute("""UPDATE lifecycle_sessions SET state='ready',compact_status='succeeded',
+                       rpa_init_status='succeeded',warmup_step=NULL,last_error=NULL,
+                       recovery_json='{}',revision=revision+1,updated_at=? WHERE id=?""",
+                       (time.time(), session_id))
+            self._event(db, "session", session_id, "session.warmup.adopted",
+                        source="coddy_session_snapshot", evidence_count=evidence_count,
+                        successful_steps=list(steps))
+            return WarmupResult(session_id, row["warmup_model"], ())
 
     def _warmup_claim(self, session_id: str) -> tuple[dict, list[tuple[str, str]]]:
         with self.store.transaction() as db:

@@ -23,11 +23,13 @@ from boring_agent.discovery import Discovery
 from boring_agent.manager import Manager
 from boring_agent.model import Conflict, Gone, Invalid, StorageError
 from boring_agent.process import lock
+from boring_agent.providers import Provider
 from boring_agent.runner import run_attempt
+from boring_agent.session_lifecycle import SessionLifecycle
 from boring_agent.store import Store
 from boring_agent.workspace import Workspace
 from features.support import AgentFixture
-from tests.support.http_provider import completion, server
+from tests.support.http_provider import coddy_stream, completion, json_response, server
 
 
 @given("an isolated local agent")
@@ -511,6 +513,156 @@ def http_timeout(context):
     context.responses = ["wait"]
 
 
+def coddy_models():
+    return json_response(200, {"data": [
+        {"id": "fixture-model", "max_context_tokens": 131072},
+        {"id": "fixture-small", "max_context_tokens": 32768},
+    ]})
+
+
+@given("the Coddy fixture warms a session then requests a file read and returns a final answer")
+def coddy_script(context):
+    context.provider_kind = "coddy"
+    context.coddy_session_id = "sess_0123456789abcdef01234567"
+    context.responses = [
+        coddy_models(),
+        coddy_stream("session compacted", session_id=context.coddy_session_id),
+        coddy_stream("project initialized", session_id=context.coddy_session_id),
+        coddy_stream(json.dumps({"action": "read_file", "path": "input.txt"}),
+                     session_id=context.coddy_session_id),
+        coddy_stream(json.dumps({"action": "final", "result": {"answer": 42}}),
+                     session_id=context.coddy_session_id),
+    ]
+
+
+@given("the Coddy fixture warms a session then rejects the work turn with HTTP 409")
+def coddy_busy(context):
+    context.provider_kind = "coddy"
+    context.coddy_session_id = "sess_0123456789abcdef01234567"
+    context.responses = [
+        coddy_models(),
+        coddy_stream("session compacted", session_id=context.coddy_session_id),
+        coddy_stream("project initialized", session_id=context.coddy_session_id),
+        json_response(409, {"error": {"message": "turn already active", "type": "conflict"}}),
+    ]
+
+
+@given("the Coddy fixture reports a prepared current session then returns a final answer")
+def coddy_prepared_session(context):
+    context.provider_kind = "coddy"
+    context.coddy_session_id = "sess_0123456789abcdef01234567"
+    context.coddy = {"session": "@session:" + context.coddy_session_id}
+    context.responses = [
+        coddy_models(),
+        json_response(200, {"messages": [
+                                {"command": "/compact", "status": "succeeded"},
+                                {"command": "/rpa-init", "status": "succeeded"},
+                            ],
+                            "settings": {"permissionMode": "accept_edits"}}),
+        coddy_stream(json.dumps({"action": "final", "result": {"answer": 42}}),
+                     session_id=context.coddy_session_id),
+    ]
+
+
+@given("the Coddy fixture reports an unproven current session then returns a final answer")
+def coddy_unproven_session(context):
+    context.provider_kind = "coddy"
+    context.coddy_session_id = "sess_0123456789abcdef01234567"
+    context.coddy = {"session": "@session:" + context.coddy_session_id}
+    context.responses = [
+        coddy_models(),
+        json_response(200, {"messages": [{"role": "user", "content": "existing context"}],
+                            "settings": {"permissionMode": "accept_edits"}}),
+        coddy_stream("session compacted", session_id=context.coddy_session_id),
+        coddy_stream("project initialized", session_id=context.coddy_session_id),
+        coddy_stream(json.dumps({"action": "final", "result": {"answer": 42}}),
+                     session_id=context.coddy_session_id),
+    ]
+
+
+@given("the Coddy fixture cannot find a requested bypass session")
+def coddy_missing_bypass_session(context):
+    context.provider_kind = "coddy"
+    context.coddy_session_id = "sess_0123456789abcdef01234567"
+    context.coddy = {"session": "@session:" + context.coddy_session_id,
+                     "permission_mode": "bypass"}
+    context.responses = [
+        coddy_models(),
+        json_response(404, {"error": {"type": "session_not_found"}}),
+    ]
+
+
+@given("the Coddy fixture loses a previously inherited bypass session")
+def coddy_lost_inherited_bypass_session(context):
+    coddy_missing_bypass_session(context)
+    session = SessionLifecycle(context.agent.store).ensure_session(
+        session_id=context.coddy_session_id,
+        model="fixture-model",
+        cwd=str(context.agent.workspace),
+        permission_mode="bypass",
+        inherited_permission=True,
+    )
+    assert session["permission_mode"] == "bypass"
+
+
+@given("the Coddy fixture reports nonadjacent warm-up replies then returns a final answer")
+def coddy_nonadjacent_warmup_history(context):
+    context.provider_kind = "coddy"
+    context.coddy_session_id = "sess_0123456789abcdef01234567"
+    context.coddy = {"session": "@session:" + context.coddy_session_id}
+    context.responses = [
+        coddy_models(),
+        json_response(200, {"messages": [
+                                {"role": "user", "content": "/compact"},
+                                {"role": "user", "content": "unrelated work"},
+                                {"role": "assistant", "status": "succeeded"},
+                                {"role": "user", "content": "/rpa-init"},
+                                {"role": "assistant", "status": "succeeded"},
+                            ],
+                            "settings": {"permissionMode": "accept_edits"}}),
+        coddy_stream("session compacted", session_id=context.coddy_session_id),
+        coddy_stream("project initialized", session_id=context.coddy_session_id),
+        coddy_stream(json.dumps({"action": "final", "result": {"answer": 42}}),
+                     session_id=context.coddy_session_id),
+    ]
+
+
+@given("the Coddy fixture reports conflicting and command-shaped warm-up evidence then returns a final answer")
+def coddy_conflicting_warmup_history(context):
+    context.provider_kind = "coddy"
+    context.coddy_session_id = "sess_0123456789abcdef01234567"
+    context.coddy = {"session": "@session:" + context.coddy_session_id}
+    context.responses = [
+        coddy_models(),
+        json_response(200, {"messages": [
+                                {"role": "user", "command": "/compact", "status": "succeeded",
+                                 "metadata": {"status": "failed"}},
+                                {"role": "user", "command": "/rpa-init", "status": None,
+                                 "metadata": {"status": "cancelled"}, "success": True},
+                                {"role": "assistant", "content": "/compact", "status": "succeeded"},
+                            ],
+                            "settings": {"permissionMode": "accept_edits"}}),
+        coddy_stream("session compacted", session_id=context.coddy_session_id),
+        coddy_stream("project initialized", session_id=context.coddy_session_id),
+        coddy_stream(json.dumps({"action": "final", "result": {"answer": 42}}),
+                     session_id=context.coddy_session_id),
+    ]
+
+
+@given("the Coddy fixture warms a session then returns a malformed terminal reason")
+def coddy_malformed_terminal_reason(context):
+    context.provider_kind = "coddy"
+    context.coddy_session_id = "sess_0123456789abcdef01234567"
+    context.responses = [
+        coddy_models(),
+        coddy_stream("session compacted", session_id=context.coddy_session_id),
+        coddy_stream("project initialized", session_id=context.coddy_session_id),
+        coddy_stream(json.dumps({"action": "final", "result": {"answer": 42}}),
+                     finish_reason=False, stop_reason=None,
+                     session_id=context.coddy_session_id),
+    ]
+
+
 @given("the worker disables provider JSON mode")
 def disable_json_mode(context):
     context.json_mode = "off"
@@ -523,9 +675,14 @@ def run_provider(context, replay_safe):
                    "BOA_MODEL": "fixture-model", "BOA_API_KEY": "fixture-only"}
     if getattr(context, "json_mode", None):
         environment["BOA_JSON_MODE"] = context.json_mode
+    if getattr(context, "coddy_session_id", None):
+        environment["BOA_CODDY_SESSION_ID"] = context.coddy_session_id
     context.resources.enter_context(patch.dict(os.environ, environment))
-    h.submit(runtime="llm", demo={}, budget={"request_seconds": .2},
-             retry={"replay_safe": replay_safe, "max_attempts": 2, "backoff_seconds": 1})
+    changes = {"runtime": "llm", "demo": {}, "budget": {"request_seconds": .2},
+               "retry": {"replay_safe": replay_safe, "max_attempts": 2, "backoff_seconds": 1}}
+    if getattr(context, "coddy", None) is not None:
+        changes["coddy"] = context.coddy
+    h.submit(**changes)
     h.tick()
     h.deliver()
     h.tick()
@@ -539,6 +696,141 @@ def llm(context):
 @when("the replay-safe LLM agent runs against the fixture")
 def replay_llm(context):
     run_provider(context, True)
+
+
+@when("the Coddy LLM agent runs against the fixture")
+def coddy_llm(context):
+    run_provider(context, False)
+
+
+@when("the replay-safe Coddy LLM agent runs against the fixture")
+def replay_coddy_llm(context):
+    run_provider(context, True)
+
+
+@when("a Coddy task reuses that current session")
+def reuse_coddy_session(context):
+    run_provider(context, False)
+
+
+@then("Coddy qualified the configured model before using the Responses API")
+def coddy_responses_path(context):
+    assert context.requests
+    assert context.requests[0]["path"] == "/v1/models", context.requests
+    assert all(request["path"] == "/v1/responses" for request in context.requests[1:]), context.requests
+
+
+@then("every Coddy request used the same session connection")
+def coddy_session_connection(context):
+    headers = [request["headers"] for request in context.requests]
+    assert {item.get("x-coddy-session-id") for item in headers} == {context.coddy_session_id}
+    assert {item.get("authorization") for item in headers} == {"Bearer fixture-only"}
+
+
+@then("the session was warmed with compact then rpa-init exactly once")
+def coddy_warmup(context):
+    inputs = [request["body"].get("input") for request in context.requests if request["body"]]
+    assert inputs[:2] == ["/compact", "/rpa-init"], inputs
+    assert inputs.count("/compact") == 1 and inputs.count("/rpa-init") == 1
+
+
+@then("the Coddy requests asked for streaming responses")
+def coddy_streaming(context):
+    posts = [request for request in context.requests if request["method"] == "POST"]
+    assert all(request["body"]["stream"] is True for request in posts), context.requests
+
+
+@then("direct Coddy work turns carry the output token cap")
+def coddy_output_cap(context):
+    work = [request for request in context.requests
+            if request["method"] == "POST" and request["body"].get("model") == "fixture-model"]
+    assert work and all(request["body"].get("max_output_tokens") == 2048 for request in work), context.requests
+
+
+@given('a Coddy session whose parent permission mode is "{permission_mode}"')
+def coddy_parent_session(context, permission_mode):
+    context.coddy_session_id = "sess_0123456789abcdef01234567"
+    context.parent_permission_mode = permission_mode
+    context.responses = [
+        json_response(200, {"settings": {"permissionMode": permission_mode}}),
+        coddy_stream(json.dumps({"delegated": True}), session_id=context.coddy_session_id),
+    ]
+
+
+@when('I invoke the "{agent}" subagent through a mention with every supported call option')
+def invoke_mention(context, agent):
+    base, context.requests, _, _ = context.resources.enter_context(server(context.responses))
+    provider = Provider("coddy", base + "/v1", "fixture-model", "fixture-only",
+                        session_id=context.coddy_session_id,
+                        permission_mode=context.parent_permission_mode)
+    context.mention = {
+        "agent": agent,
+        "prompt": "Implement the bounded fixture task.",
+        "description": "Implement fixture task",
+        "background": False,
+        "expected_seconds": 45,
+        "timeout_seconds": 120,
+        "model": "fixture-child-model",
+        "reasoning": "high",
+        "notify_on_finish": False,
+        "permission_mode": "bypass",
+    }
+    context.mention_completion = provider.complete(
+        [{"role": "user", "content": "Delegate this fixture."}], mention=context.mention)
+
+
+@then("Coddy receives the complete subagent mention call")
+def complete_mention(context):
+    request = context.requests[-1]
+    text = request["body"]["input"]
+    assert "@agent:exec" in text
+    for key in ("agent", "prompt", "description", "background", "expected_seconds",
+                "timeout_seconds", "model", "reasoning", "notify_on_finish"):
+        assert key in text, (key, text)
+    assert request["body"]["model"] == "agent"
+    assert request["body"]["metadata"]["model"] == "fixture-model"
+
+
+@then('the subagent inherits permission mode "{permission_mode}"')
+def inherited_permission(context, permission_mode):
+    patch_request = context.requests[0]
+    assert patch_request["method"] == "PATCH"
+    assert patch_request["body"] == {"permissionMode": permission_mode}
+    assert f"permission_mode: {permission_mode}" in context.requests[-1]["body"]["input"]
+
+
+@then("the mention uses the parent session connection and context")
+def mention_context(context):
+    assert all(request["headers"].get("x-coddy-session-id") == context.coddy_session_id
+               for request in context.requests)
+    assert all(request["headers"].get("authorization") == "Bearer fixture-only"
+               for request in context.requests)
+
+
+@then("the current Coddy session is inspected once")
+def current_session_inspected(context):
+    reads = [request for request in context.requests
+             if request["method"] == "GET" and "/coddy/sessions/" in request["path"]]
+    assert len(reads) == 1, context.requests
+    assert reads[0]["path"] == f"/coddy/sessions/{context.coddy_session_id}/messages"
+
+
+@then("no warm-up command is repeated")
+def no_repeated_warmup(context):
+    inputs = [request["body"].get("input") for request in context.requests if request["body"]]
+    assert "/compact" not in inputs and "/rpa-init" not in inputs, inputs
+
+
+@then("no warm-up or work turn was sent")
+def no_coddy_turn_sent(context):
+    assert not [request for request in context.requests if request["method"] == "POST"], context.requests
+
+
+@then("the work turn uses the current session context")
+def work_uses_current_session(context):
+    work = [request for request in context.requests if request["method"] == "POST"]
+    assert len(work) == 1, context.requests
+    assert work[0]["headers"].get("x-coddy-session-id") == context.coddy_session_id
 
 
 @then("the provider was asked for a JSON object response")

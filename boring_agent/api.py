@@ -17,7 +17,7 @@ from .discovery import Discovery
 from .model import AgentError, Conflict, Invalid, NotFound, StorageError, strict_json
 from .session_lifecycle import SessionLifecycle
 from .store import Store
-from . import __version__
+from . import PRODUCT_NAME, __version__
 
 
 MAX_BODY_BYTES = 256_000
@@ -48,7 +48,7 @@ def handler_type(store: Store, auth_token: str):
     """Create a handler bound to one initialized store and optional bearer token."""
     lifecycle = SessionLifecycle(store)
     class Handler(BaseHTTPRequestHandler):
-        server_version = "boring-orch-agent/" + __version__
+        server_version = PRODUCT_NAME + "/" + __version__
 
         def log_message(self, format, *args):
             # The CLI owns logging. Avoid recording request paths or bearer headers here.
@@ -77,7 +77,7 @@ def handler_type(store: Store, auth_token: str):
             if hmac.compare_digest(supplied, expected):
                 return True
             self._reply(401, {"error": "unauthorized", "message": "Bearer authentication is required"},
-                        {"WWW-Authenticate": 'Bearer realm="boring-orch-agent"'})
+                        {"WWW-Authenticate": f'Bearer realm="{PRODUCT_NAME}"'})
             return False
 
         def _segments(self):

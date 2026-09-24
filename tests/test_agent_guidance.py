@@ -49,6 +49,12 @@ class AgentGuidanceTests(unittest.TestCase):
         self.assertIn("Dependencies flow from outer layers to established inner layers only.", architecture)
         self.assertIn("Implement and test each lower layer before adding behavior to a dependent layer.", architecture)
 
+    def test_architecture_keeps_coddy_session_state_out_of_stateless_providers(self):
+        architecture = body(ROOT / ".cursor" / "rules" / "architecture.mdc")
+        self.assertIn("POST /v1/responses", architecture)
+        self.assertIn("stable `X-Coddy-Session-ID`", architecture)
+        self.assertIn("may only narrow it", architecture)
+
     def test_every_cursor_rule_is_reachable(self):
         for path in (ROOT / ".cursor" / "rules").glob("*.mdc"):
             with self.subTest(rule=path.name):
@@ -65,7 +71,16 @@ class AgentGuidanceTests(unittest.TestCase):
         index = (ROOT / ".codex" / "rules.md").read_text(encoding="utf-8")
         for name in ("workflow", "architecture", "testing", "code-style", "implementation-order", "api-layer", "core-modules"):
             self.assertIn(name, index)
-        self.assertIn("AGENTS.md", (ROOT / ".coddy" / "rules" / "boring-orch-agent.md").read_text(encoding="utf-8"))
+        self.assertIn("AGENTS.md", (ROOT / ".coddy" / "rules" / "boring-agent.md").read_text(encoding="utf-8"))
+
+    def test_coddy_project_agent_is_canonical_and_inherits_its_model(self):
+        definition = (ROOT / ".coddy" / "agents" / "boring-agent.md").read_text(encoding="utf-8")
+        frontmatter, body = definition.split("\n---\n", 1)
+        self.assertIn("name: boring-agent", frontmatter)
+        self.assertIn("description:", frontmatter)
+        self.assertNotIn("\nmodel:", frontmatter)
+        self.assertIn("root AGENTS.md", body)
+        self.assertIn("Never widen the parent permission mode", body)
 
     def test_public_job_templates_are_valid_task_documents(self):
         # Example validation is offline and does not launch an operational job.
@@ -83,7 +98,7 @@ class AgentGuidanceTests(unittest.TestCase):
         reference = "docs/exec.md"
         contract = (ROOT / reference).read_text(encoding="utf-8")
         for path in ("AGENTS.md", ".cursor/rules/workflow.mdc", ".claude/rules/workflow.md",
-                     ".coddy/rules/boring-orch-agent.md"):
+                     ".coddy/rules/boring-agent.md"):
             with self.subTest(path=path):
                 text = (ROOT / path).read_text(encoding="utf-8")
                 self.assertIn(reference, text)

@@ -1,5 +1,6 @@
 """One detached supervisor per attempt. A launch claim is never automatically replayed."""
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -8,9 +9,11 @@ import threading
 import time
 
 from .artifacts import publish
-from .model import AgentError, Conflict, Invalid, canonical, strict_json
+from .model import (AgentError, Conflict, Invalid, canonical,
+                    coddy_session_id_from_mention, strict_json)
 from .process import identity, lock
 from .providers import ExecutionError, Provider
+from .session_lifecycle import DEFAULT_PERMISSION_MODE, SessionLifecycle, WARMUP_STEPS
 from .store import Store, event, executions
 from .workspace import Workspace
 
@@ -46,7 +49,7 @@ class Controller:
         if time.monotonic() >= self.end or time.time() >= self.task["deadline"]:
             raise ExecutionError("permanent", "Execution time budget exhausted")
 
-    def request(self, provider, messages):
+    def request(self, provider, messages=None, *, command=None, model=None, mention=None):
         self.checkpoint()
         budget = self.spec["budget"]
         remaining = None if budget["max_tokens"] is None else budget["max_tokens"] - self.task["tokens_used"] - self.tokens
@@ -58,7 +61,11 @@ class Controller:
 
         def call():
             try:
-                results.put(provider.complete(messages, self.spec["model"], output_tokens, duration))
+                if command is not None:
+                    results.put(provider.command(command, model=model, timeout=duration))
+                else:
+                    results.put(provider.complete(messages, self.spec["model"], output_tokens, duration,
+                                                  mention=mention))
             except Exception as exc:
                 results.put(exc)
 
@@ -95,6 +102,64 @@ class Controller:
                                  f"(output limit {output_tokens} tokens); raise budget.output_tokens or use a model that reasons less")
         return response
 
+    @staticmethod
+    def _coddy_session_id(task_id):
+        return "sess_" + hashlib.sha256(("boring-agent:" + task_id).encode()).hexdigest()[:24]
+
+    def _warm_coddy(self, provider, *, continue_session=False):
+        session_id = provider.session_id or self._coddy_session_id(self.task["id"])
+        provider.session_id = session_id
+        model = self.spec["model"] or provider.model
+        snapshot = None
+        requested_permission = provider.permission_mode
+        self.checkpoint()
+        catalog_timeout = max(.1, min(self.spec["budget"]["request_seconds"], self.end - time.monotonic()))
+        lifecycle = SessionLifecycle(self.store, provider.model_contexts(timeout=catalog_timeout))
+        if continue_session:
+            self.checkpoint()
+            self.heartbeat()
+            timeout = max(.1, min(self.spec["budget"]["request_seconds"], self.end - time.monotonic()))
+            snapshot = provider.session_snapshot(timeout=timeout)
+            if requested_permission is not None:
+                inherited = provider.permission_mode or DEFAULT_PERMISSION_MODE
+                effective = provider.narrow_permission_mode(inherited, requested_permission)
+                if effective != inherited:
+                    provider.set_permission_mode(effective, timeout=timeout)
+        permission_mode = provider.permission_mode or DEFAULT_PERMISSION_MODE
+        session = lifecycle.ensure_session(
+            session_id=session_id,
+            model=model,
+            cwd=self.spec["workspace"],
+            permission_mode=permission_mode,
+            inherited_permission=snapshot is not None,
+        )
+        if snapshot is not None and session["state"] == "new":
+            evidence = provider.prepared_warmup_evidence(snapshot)
+            if evidence == WARMUP_STEPS:
+                lifecycle.adopt_prepared_session(
+                    session_id, successful_steps=evidence,
+                    evidence_count=len(snapshot.get("messages", [])),
+                )
+                return
+
+        def execute(command, warmup_model, received_session, key):
+            if received_session != session_id:
+                raise ExecutionError("permanent", "Lifecycle warm-up changed the Coddy session ID")
+            # The stable key is durable lifecycle evidence. Coddy's command API
+            # itself is session-serial and does not accept a separate key.
+            return self.request(provider, command=command, model=warmup_model)
+
+        deadline_at = time.time() + max(0, self.end - time.monotonic())
+        try:
+            if session["state"] == "failed":
+                lifecycle.retry_warmup(session_id, execute)
+            else:
+                lifecycle.warm_session(session_id, execute, deadline_at=deadline_at)
+        except Conflict as exc:
+            if isinstance(exc.__cause__, ExecutionError):
+                raise exc.__cause__
+            raise ExecutionError("permanent", str(exc)) from exc
+
     def demo(self):
         config = self.spec["demo"]
         end = time.monotonic() + config["delay_seconds"]
@@ -108,7 +173,16 @@ class Controller:
         return config.get("result", {"objective": self.spec["objective"], "attempt": self.attempt["number"], "demo": True})
 
     def llm(self):
-        provider = Provider.from_env()
+        coddy = self.spec.get("coddy")
+        provider = Provider.from_env(permission_mode=coddy.get("permission_mode") if coddy else None)
+        if coddy is not None and provider.kind != "coddy":
+            raise ExecutionError("permanent", "Task coddy options require BOA_PROVIDER=coddy")
+        if provider.kind == "coddy":
+            continued = coddy_session_id_from_mention(coddy.get("session")) if coddy else None
+            provider.session_id = continued or provider.session_id or self._coddy_session_id(self.task["id"])
+            if coddy is not None:
+                provider.stream = coddy["stream"]
+            self._warm_coddy(provider, continue_session=continued is not None)
         workspace = Workspace(self.spec["workspace"], self.spec["tools"], self.store.home)
         system = (
             "You are a bounded workspace agent. Solve the user's objective using only the supplied tools. "
@@ -132,7 +206,9 @@ class Controller:
             self.checkpoint()
             if len(canonical(messages).encode()) > 524288:
                 raise ExecutionError("permanent", "Conversation exceeded the 512 KiB context bound")
-            completion = self.request(provider, messages)
+            request_messages = messages if provider.kind != "coddy" or step == 1 else [messages[-1]]
+            mention = coddy.get("mention") if coddy and step == 1 else None
+            completion = self.request(provider, request_messages, mention=mention)
             response = completion.text
             try:
                 action = strict_json(response)

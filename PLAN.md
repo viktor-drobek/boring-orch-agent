@@ -1,6 +1,6 @@
 # Implementation plan
 
-This is the working plan for `boring-orch-agent`. It replaces the earlier `TODO.md`.
+This is the working plan for `boring-agent`. It replaces the earlier `TODO.md`.
 Work follows [AGENTS.md](AGENTS.md): an observable Gherkin scenario first, then the
 smallest change in the lowest owning layer ([docs/architecture.md](docs/architecture.md)),
 then `python tools/pipeline.py` as the release gate.

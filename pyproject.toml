@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boring-orch-agent"
+name = "boring-agent"
 version = "0.1.5"
 description = "A durable local manager-worker orchestrator for agent tasks"
 readme = "README.md"
@@ -20,8 +20,29 @@ dependencies = ["jsonschema>=4.19.2,<5", "referencing>=0.28.4"]
 dev = ["behave==1.3.3", "build==1.3.0", "setuptools>=77", "wheel>=0.43"]
 
 [project.scripts]
+boring-agent = "boring_agent.cli:main"
 boring-orch-agent = "boring_agent.cli:main"
 boa = "boring_agent.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["boring_agent*"]
+
+[tool.setuptools.data-files]
+"." = ["AGENTS.md", "CLAUDE.md", "SKILL.md"]
+".coddy/agents" = [".coddy/agents/*.md"]
+".coddy/rules" = [".coddy/rules/*.md"]
+".codex" = [".codex/*.json", ".codex/*.md"]
+".codex/hooks" = [".codex/hooks/*.py"]
+".codex-plugin" = [".codex-plugin/*.json"]
+".claude/rules" = [".claude/rules/*.md"]
+".claude-plugin" = [".claude-plugin/*.json"]
+".cursor/rules" = [".cursor/rules/*.mdc"]
+".cursor-plugin" = [".cursor-plugin/*.json"]
+"docs" = ["docs/*.md"]
+"examples" = ["examples/*.json"]
+"examples/api" = ["examples/api/*.json"]
+"examples/coddy" = ["examples/coddy/*.json", "examples/coddy/*.md"]
+"examples/jobs" = ["examples/jobs/*.json", "examples/jobs/*.md"]
+"features" = ["features/*.feature", "features/*.py"]
+"features/steps" = ["features/steps/*.py"]
+"tools" = ["tools/*.py"]

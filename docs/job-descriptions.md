@@ -1,6 +1,6 @@
 # Job descriptions and sample scenarios
 
-A job description is a JSON task document accepted by `POST /api/v1/tasks` or `boring-orch-agent submit`. The document is immutable after acceptance. Its `objective` is the agent’s work request; it is not inferred from a branch name, an issue title, or a file found in the workspace.
+A job description is a JSON task document accepted by `POST /api/v1/tasks` or `boring-agent submit`. The document is immutable after acceptance. Its `objective` is the agent’s work request; it is not inferred from a branch name, an issue title, or a file found in the workspace.
 
 ## Where jobs come from
 
@@ -19,6 +19,7 @@ For local work, copy one of the versioned templates in [`examples/jobs/`](../exa
 | `output_schema` | Machine-checkable final result. |
 | `budget` | Maximum agent steps, provider request time, and output size. |
 | `retry` | Whether the logical job is safe to repeat after a confirmed transient failure. |
+| `coddy` | Optional session, streaming, permission, and subagent mention settings for `BOA_PROVIDER=coddy`. |
 | `expect_files` | Relative paths that must exist in the workspace when the job returns. The runner checks them before publishing the result, so a job cannot report success for a file it never wrote. The check is **existence at publication time**: it proves the file is there, not that this attempt created it or that its contents are correct. A file that already existed satisfies the check, so pair it with an `output_schema` that carries what the job produced, or with a following read-only review job. Paths are validated like every other task path: absolute, parent (`..`) and hidden components are rejected at submission. |
 
 ## Scenario: read-only repository review
@@ -26,7 +27,7 @@ For local work, copy one of the versioned templates in [`examples/jobs/`](../exa
 Use [`read-only-review.json`](../examples/jobs/read-only-review.json) when a reviewer should inspect files and return findings without changing them.
 
 ```bash
-boring-orch-agent --home .boa submit examples/jobs/read-only-review.json \
+boring-agent --home .boa submit examples/jobs/read-only-review.json \
   --key review-main-2026-001
 ```
 
@@ -37,7 +38,7 @@ It grants only `list_files` and `read_file`, requires a summary and structured f
 Use [`inventory.json`](../examples/jobs/inventory.json) when another agent or service needs a small JSON inventory of a directory. The output schema makes the result suitable for an API client to consume.
 
 ```bash
-boring-orch-agent --home .boa submit examples/jobs/inventory.json \
+boring-agent --home .boa submit examples/jobs/inventory.json \
   --key inventory-docs-2026-001
 ```
 
@@ -46,9 +47,9 @@ boring-orch-agent --home .boa submit examples/jobs/inventory.json \
 Use [`write-summary.json`](../examples/jobs/write-summary.json) only after enabling write access at both boundaries:
 
 ```bash
-boring-orch-agent --home .boa init --workspace ~/agent-workspace --allow-workspace-write
-boring-orch-agent --home .boa worker --id writer-1 --runtime llm --slots 1 --allow-workspace-write
-boring-orch-agent --home .boa submit examples/jobs/write-summary.json --key write-summary-2026-001
+boring-agent --home .boa init --workspace ~/agent-workspace --allow-workspace-write
+boring-agent --home .boa worker --id writer-1 --runtime llm --slots 1 --allow-workspace-write
+boring-agent --home .boa submit examples/jobs/write-summary.json --key write-summary-2026-001
 ```
 
 The job asks for one named file. The result reports its path and summary, but a person or separate validation step should still review the changed file.
@@ -64,6 +65,51 @@ curl --fail-with-body http://127.0.0.1:8088/api/v1/tasks \
 ```
 
 Save the returned `task_id` alongside the ticket or workflow run. Reuse the same idempotency key only when retrying the exact same submission after a lost response. A new version of a job needs a new key.
+
+## Coddy Responses task options
+
+The `coddy` object is accepted only with `runtime: "llm"` and contains no
+connection secrets:
+
+```json
+{
+  "coddy": {
+    "session": "@session:sess_0123456789abcdef01234567",
+    "permission_mode": "accept_edits",
+    "stream": true,
+    "mention": {
+      "agent": "exec",
+      "prompt": "Implement and verify the accepted change.",
+      "description": "Implement accepted change",
+      "background": true,
+      "expected_seconds": 300,
+      "timeout_seconds": 900,
+      "model": "configured-model-id",
+      "reasoning": "high",
+      "notify_on_finish": true,
+      "permission_mode": "ask"
+    }
+  }
+}
+```
+
+`session` is optional. Without it, the task gets a deterministic session ID.
+With it, the worker reads that Coddy session and skips warm-up only when the
+snapshot explicitly proves successful `/compact` then `/rpa-init` commands in
+that order through explicit command records or adjacent user-command and
+assistant-success messages; unrelated messages clear pending proof. Message
+count alone is never sufficient. `stream` defaults to
+`true`. `permission_mode` is
+`ask`, `accept_edits`, or `bypass`; `bypass` is accepted only when inherited
+from an explicitly resumed session whose snapshot exists. A mention emits `@agent:<agent>` and asks
+Coddy to call `spawn_agent` exactly once with the listed arguments. The child
+mode can only be equal to or narrower than the current session mode. Omit
+`prompt` to use the task objective. Connection URL, bearer token, and provider
+model remain operator-owned environment settings.
+
+The task's `budget.output_tokens` is sent as `max_output_tokens` on direct-model
+Responses turns. Coddy's `agent`, `plan`, and `ask` profiles do not honor a
+per-request generation cap, so command and subagent-profile turns omit it.
 
 ## Native exec jobs and sessions
 
