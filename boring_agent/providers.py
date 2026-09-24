@@ -328,8 +328,10 @@ class Provider:
             raise ExecutionError("permanent", "Coddy returned a non-object session snapshot")
         settings = value.get("settings") if isinstance(value.get("settings"), dict) else {}
         inherited = settings.get("permissionMode", value.get("permissionMode"))
-        if inherited in PERMISSION_RANK:
-            self.permission_mode = inherited
+        # Only an observed session mode is inherited. A requested mode (for
+        # example the task's bypass) is never authority by itself, so an
+        # unreported or unrecognized mode fails closed to ask.
+        self.permission_mode = inherited if inherited in PERMISSION_RANK else "ask"
         return value
 
     def model_contexts(self, timeout=30):

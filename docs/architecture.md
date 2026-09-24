@@ -47,8 +47,10 @@ is adopted only when its snapshot explicitly records successful `/compact` then
 pairs; unrelated messages clear pending proof. A nonzero message count is not
 preparation evidence. A new session
 runs those commands in order, with each successful step recorded durably. A resumed session may inherit its current
-permission mode only when that session snapshot exists; a missing or new session
-starts at `ask` and cannot inherit bypass authority. A subagent mention serializes
+permission mode only when that session snapshot exists and reports a recognized
+`permissionMode`; a missing or new session, or a snapshot that omits the mode,
+starts at `ask`. The task's requested mode is never treated as inherited, so it
+can only narrow an observed mode and cannot grant bypass authority. A subagent mention serializes
 `@agent:<name>` plus the complete `spawn_agent` argument object into the same
 session. Its explicit permission mode is clamped to the parent's authority.
 

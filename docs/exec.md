@@ -70,14 +70,21 @@ model whose context window is at least 100,000 tokens. The selected default is
 `ndsub/qwen3.8-27b` (262,144 tokens), unless the requested model is already
 qualified. Warm-up time consumes the job deadline. Each command has a stable
 session-scoped idempotency key; a recorded successful command is never run
-again. A crash while a command is externally running becomes `recovering` and
-requires an operator-confirmed retry with the same key.
+again. A crash while a command is externally running, or an executor error whose
+outcome is `unknown` or unclassified (for example a stream without
+`data: [DONE]`), becomes `recovering` and requires an operator-confirmed retry
+with the same key. Only a confirmed rejection (`permanent`, `transient`,
+`validation`, `cancelled`, or an explicit `False`) marks the warm-up `failed`.
+A job is never claimed on a session that has not recorded both successful
+steps; a failed or recovering warm-up must be retried first.
 
 Completed jobs transfer only their recorded, validated result and session
 mention to dependents. A single sequential dependent may reuse the completed
 session. When one parent has multiple dependents, every dependent gets an
 independent child session with the same lineage; no live session is used
-concurrently. A restart marks an in-flight run or uncertain transfer as
+concurrently. A dependent that names its own `@session:<id>` keeps that session
+and becomes `ready` once its dependencies succeed; jobs that share it still run
+only one at a time. A restart marks an in-flight run or uncertain transfer as
 `unknown`/`recovering`, retains the diagnostic evidence, and never replays it
 automatically. Legacy `llm`/`demo` tasks and their SQLite history remain
 separate from this native lifecycle.
