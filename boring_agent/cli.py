@@ -80,7 +80,16 @@ def loop(tick, poll, once=False):
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         while not stopped:
-            tick()
+            try:
+                tick()
+            except (AgentError, OSError, UnicodeError) as exc:
+                if once:
+                    raise
+                # A long-lived loop survives one failed tick (for example a locked or
+                # briefly unavailable store) and retries on the next poll. Log only the
+                # error class and code: messages can carry host paths or payload text.
+                print(json.dumps({"event": "loop.tick_failed", "error": type(exc).__name__,
+                                  "code": getattr(exc, "code", "io_error")}), file=sys.stderr, flush=True)
             if once:
                 break
             time.sleep(poll)

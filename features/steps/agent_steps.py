@@ -1171,9 +1171,9 @@ def intent_recorded(context):
 @given("retention stops after deleting a dependent record")
 def retention_interrupted(context):
     h = context.agent
-    # stop_after names the phase reached: dependents are gone, the task row and
-    # its artifact still exist, and the durable intent says what comes next.
-    h.store.retain(now=time.time(), stop_after="task")
+    # stop_after names the phase just committed: dependents are gone, the task row
+    # and its artifact still exist, and the durable intent says what comes next.
+    h.store.retain(now=time.time(), stop_after="dependents")
     with h.store.reading() as db:
         assert db.execute("SELECT phase FROM retention_intents WHERE task_id=?", (context.retained_task,)).fetchone()[0] == "task"
         assert db.execute("SELECT count(*) FROM attempts WHERE task_id=?", (context.retained_task,)).fetchone()[0] == 0

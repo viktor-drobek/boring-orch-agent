@@ -1,13 +1,20 @@
 """Intent, admission, settlement and retry decisions, serialized by SQLite."""
 from dataclasses import replace
 import json
+import sys
 import time
 import uuid
 
 from .artifacts import ResultVerdict, artifact_checksum, prevalidate_result
-from .model import Invalid, TERMINAL, canonical, digest
+from .model import Gone, Invalid, TERMINAL, canonical, digest
 from .process import alive
 from .store import event, executions
+
+
+def report_fault(kind, exc, **ids):
+    """Log a contained fault by exception class only; messages may carry paths or payload text."""
+    print(json.dumps({"event": kind, "error": type(exc).__name__,
+                      "code": getattr(exc, "code", None), **ids}), file=sys.stderr, flush=True)
 
 
 class Manager:
@@ -92,7 +99,12 @@ class Manager:
                         self.settle(db, task, attempt, spec, now)
             self.schedule(db, cfg, now)
         for task, attempt, spec in validations:
-            self._validate_and_settle(task, attempt, spec)
+            # One task's unexpected settlement fault must not stop every later task
+            # from settling. Its attempt stays unsettled and is retried next tick.
+            try:
+                self._validate_and_settle(task, attempt, spec)
+            except Exception as exc:  # noqa: BLE001 - isolation boundary, reported below
+                report_fault("manager.settlement_failed", exc, task_id=task["id"], attempt_id=attempt["id"])
 
     @staticmethod
     def _invalid_verdict(attempt, spec, desired_action, message):
@@ -104,7 +116,9 @@ class Manager:
         try:
             verdict = prevalidate_result(self.store, attempt_snapshot, spec_snapshot,
                                          task_snapshot["desired_action"])
-        except (Invalid, RecursionError) as exc:
+        except (Invalid, Gone, RecursionError) as exc:
+            # A vanished artifact is confirmed evidence that this attempt produced no
+            # acceptable result, exactly like a wrong result type.
             verdict = self._invalid_verdict(attempt_snapshot, spec_snapshot,
                                             task_snapshot["desired_action"], str(exc))
 
@@ -113,7 +127,7 @@ class Manager:
         if verdict.error is None and task_snapshot["desired_action"] == "Run":
             try:
                 current_checksum = artifact_checksum(self.store, attempt_snapshot, spec_snapshot)
-            except (Invalid, RecursionError) as exc:
+            except (Invalid, Gone, RecursionError) as exc:
                 verdict = replace(verdict, error=str(exc))
             else:
                 if current_checksum != verdict.result_sha256:

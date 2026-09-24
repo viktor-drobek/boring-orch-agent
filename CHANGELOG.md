@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reject NUL bytes and non-UTF-8 text in tool paths and `expect_files` as invalid input; the model receives a tool error instead of the runner crashing into `Unknown`.
+- Tool results for failed file operations no longer include absolute host paths.
+- A succeeded attempt whose artifact vanished fails acceptance and releases its slot instead of crashing every manager tick; per-task settlement faults and failed loop ticks are logged by error class and no longer stop the manager or worker loop.
+- Retention can no longer be blocked by an event recorded between its phases, and `retain(stop_after=...)` now names the phase just committed.
+- `Store.connect()` closes its connection when opening or migration fails.
+
 ## 0.2.0
 
 - Add a dedicated `coddy` provider for `POST /v1/responses`, with stable `X-Coddy-Session-ID`, JSON and SSE parsing, named event capture, safe error classification, and no behavior changes for the existing OpenAI, Anthropic, or Ollama adapters.
