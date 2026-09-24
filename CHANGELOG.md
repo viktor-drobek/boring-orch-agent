@@ -7,6 +7,15 @@
 - A succeeded attempt whose artifact vanished fails acceptance and releases its slot instead of crashing every manager tick; per-task settlement faults and failed loop ticks are logged by error class and no longer stop the manager or worker loop.
 - Retention can no longer be blocked by an event recorded between its phases, and `retain(stop_after=...)` now names the phase just committed.
 - `Store.connect()` closes its connection when opening or migration fails.
+- **Security, breaking:** `POST /api/v1/discovery/approve` now returns `403 operator_only`; approvals are created only through `Discovery.approve()`. The approval fingerprint now binds the generative endpoint (provider, `base_url` including the `BOA_BASE_URL` fallback, model, `credential_ref`), so credentials go only to the approved endpoint; earlier approvals must be re-approved.
+- Token-less loopback listeners refuse non-loopback `Host` headers (`403`) and POSTs without `Content-Type: application/json` (`415`).
+- API errors never drop the connection: malformed input is `400 invalid_request`, unexpected faults are `500 internal_error`, the bearer token is compared as bytes, and an unknown workflow is `404`. `GET /api/v1/native/jobs/{job_id}` is documented.
+- **Security:** a workflow plan may set only allowlisted child fields; runtime and model must match the root, and a `coddy` block may only drop the session, narrow permission mode, or keep an existing mention. Child token ceilings are summed against the remaining workflow budget, and children are not claimed once the workflow is failed or exhausted.
+- **Breaking:** `POST /api/v1/workflows/{id}/plan` and `/replan` require `Idempotency-Key`; a second non-replan plan is `409`, and a rejected plan no longer fails a workflow that already has an accepted plan. Replanning cancels only children that provably have not started; launched or `Unknown` children receive a durable cancel request and keep their reservation.
+- **Security:** a resumed Coddy session that does not report its permission mode is treated as `ask`; a requested mode can no longer pass as inherited.
+- An uncertain (`unknown`) warm-up outcome marks the lifecycle session `recovering` and requires operator-confirmed retry with the same key; `start_job` refuses a session whose `/compact` and `/rpa-init` have not both succeeded; a dependent job that names a session becomes ready once its dependencies succeed.
+- Discovery, workflow and lifecycle schema setup no longer use `executescript()`, whose implicit COMMIT ended the caller's `BEGIN IMMEDIATE` transaction.
+- ACP launch plans point `HOME` and XDG directories at the in-sandbox state mount (Tier A) and build the agent environment from an allowlist plus declared `environment_passthrough`; `BOA_*` and credential-shaped variables are never passed and declaring one refuses the launch.
 
 ## 0.2.0
 
