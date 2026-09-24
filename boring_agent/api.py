@@ -197,9 +197,10 @@ def handler_type(store: Store, auth_token: str):
                 key = self.headers.get("Idempotency-Key", "")
                 return self._reply(202, store.create_workflow(_body(self), key))
             if len(parts) == 5 and parts[:3] == ["api", "v1", "workflows"] and parts[4] in ("plan", "replan"):
+                key = self.headers.get("Idempotency-Key", "")
                 plan = _body(self)
                 return self._reply(202, store.settle_workflow_plan(parts[3], plan,
-                                                                   replan=parts[4] == "replan"))
+                                                                   replan=parts[4] == "replan", key=key))
             if len(parts) == 5 and parts[:3] == ["api", "v1", "tasks"] and parts[4] == "cancel":
                 key = self.headers.get("Idempotency-Key", "")
                 return self._reply(202, store.cancel(parts[3], key))

@@ -125,7 +125,8 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(duplicate["duplicate"])
         plan = {"children": [{"id": "one", "order": 0,
                                "task": {"objective": "one", "runtime": "demo"}}]}
-        status, settled = self.request("POST", f"/api/v1/workflows/{receipt['workflow_id']}/plan", plan)
+        status, settled = self.request("POST", f"/api/v1/workflows/{receipt['workflow_id']}/plan", plan,
+                                       {"Idempotency-Key": "workflow-api-plan"})
         self.assertEqual(status, 202)
         self.assertEqual(settled["state"], "accepted")
         status, children = self.request("GET", f"/api/v1/workflows/{receipt['workflow_id']}/children")
