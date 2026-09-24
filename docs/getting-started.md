@@ -7,8 +7,8 @@ This guide starts a complete offline installation, then shows how to replace the
 Linux is required. The manager and worker read process identity from `/proc` and take `flock` locks; on another platform every long-running subcommand exits with "runs on Linux only" before touching the store.
 
 ```bash
-git clone https://github.com/viktor-drobek/boring-agent.git
-cd boring-agent
+git clone https://github.com/viktor-drobek/boring-orch-agent.git
+cd boring-orch-agent
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'

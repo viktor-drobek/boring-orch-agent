@@ -6,8 +6,8 @@
     "name": "Viktor Drobek",
     "email": "viktor@drobek.dev"
   },
-  "homepage": "https://github.com/viktor-drobek/boring-agent",
-  "repository": "https://github.com/viktor-drobek/boring-agent",
+  "homepage": "https://github.com/viktor-drobek/boring-orch-agent",
+  "repository": "https://github.com/viktor-drobek/boring-orch-agent",
   "license": "MIT",
   "keywords": [
     "orchestrator",
@@ -16,6 +16,5 @@
     "sqlite",
     "api",
     "workflow"
-  ],
-  "category": "developer-tools"
+  ]
 }

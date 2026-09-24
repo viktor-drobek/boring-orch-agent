@@ -6,8 +6,8 @@
     "name": "Viktor Drobek",
     "url": "https://github.com/viktor-drobek"
   },
-  "homepage": "https://github.com/viktor-drobek/boring-agent",
-  "repository": "https://github.com/viktor-drobek/boring-agent",
+  "homepage": "https://github.com/viktor-drobek/boring-orch-agent",
+  "repository": "https://github.com/viktor-drobek/boring-orch-agent",
   "license": "MIT",
   "keywords": [
     "orchestrator",
@@ -23,6 +23,6 @@
     "shortDescription": "Durable local orchestrator for bounded agent tasks with SQLite-backed state and HTTP API.",
     "developerName": "Viktor Drobek",
     "category": "Developer Tools",
-    "websiteURL": "https://github.com/viktor-drobek/boring-agent"
+    "websiteURL": "https://github.com/viktor-drobek/boring-orch-agent"
   }
 }

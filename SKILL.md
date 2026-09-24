@@ -8,8 +8,8 @@ description: >
 metadata:
   boring-agent:
     emoji: "⚙️"
-    homepage: "https://github.com/viktor-drobek/boring-agent"
-    docs: "https://github.com/viktor-drobek/boring-agent/tree/main/docs"
+    homepage: "https://github.com/viktor-drobek/boring-orch-agent"
+    docs: "https://github.com/viktor-drobek/boring-orch-agent/tree/main/docs"
 ---
 
 # boring-agent compatibility skill
