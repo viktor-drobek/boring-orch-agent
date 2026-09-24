@@ -90,37 +90,30 @@ coddy skills list | grep boring-agent
 
 ## Claude (Claude Code / Claude Desktop)
 
-Claude Code reads `.claude/rules/*.md` for project-specific instructions.
+Claude Code needs no installation step inside this checkout. Opening the
+repository root loads `CLAUDE.md` (a symlink to `AGENTS.md`) and every
+`.claude/rules/*.md` file. Rules without frontmatter are always on; rules with
+`paths:` frontmatter attach when Claude works on matching files. The
+`.claude/rules/` files are maintained copies of `.cursor/rules/*.mdc` with
+Claude frontmatter, so do not replace them with symlinks to the `.mdc` files:
+Cursor `globs:` frontmatter is not read by Claude Code.
 
-### Install
+`.claude/settings.json` pre-approves the read-only and test commands used by
+the development workflow. Put personal overrides in the git-ignored
+`.claude/settings.local.json`.
 
-1. Copy the plugin descriptor:
+### Optional: load the compatibility skill as a plugin
 
-   ```bash
-   mkdir -p ~/.claude/plugins/boring-agent
-   cp .claude-plugin/plugin.json ~/.claude/plugins/boring-agent/
-   ```
+The repository root is also a single-skill Claude Code plugin
+(`.claude-plugin/plugin.json` plus the root `SKILL.md`). Load it for one
+session from a checkout:
 
-2. Copy the skill file (Claude Code ignores `SKILL.md` by default, but keeps it
-   for reference):
+```bash
+claude --plugin-dir /path/to/boring-orch-agent
+```
 
-   ```bash
-   cp SKILL.md ~/.claude/plugins/boring-agent/
-   ```
-
-3. Symlink the rules into the project's `.claude/rules/` (if working inside the
-   submodule directly):
-
-   ```bash
-   mkdir -p .claude/rules
-   for f in .cursor/rules/*.mdc; do
-     ln -s "$(realpath "$f")" ".claude/rules/$(basename "$f" .mdc).md"
-   done
-   ```
-
-> **Important:** Claude Code does not natively read `.mdc` files. The symlink
-> step converts Cursor's `.mdc` rules into `.md` files Claude Code understands.
-> Keep the content equivalent per the [Rules Sync](AGENTS.md#rules-sync) contract.
+Check the manifest with `claude plugin validate .`. Copying `plugin.json` into
+`~/.claude/plugins/` does not install a plugin.
 
 ---
 
@@ -155,7 +148,7 @@ Cursor natively reads `.cursor/rules/*.mdc` and discovers plugins through
 | Coddy refuses the project agent | Definition needs workspace approval | Run `coddy agents trust boring-agent --cwd "$(pwd)"` |
 | `boring-agent` reports `BLOCKED` before execution | `exec` is missing or nested spawning is limited to depth 1 | Configure `exec` and set `subagents.max_depth: 2` or greater |
 | Coddy does not list compatibility skill | `skills.dirs` missing path | Check the configured skill directories and the copied `SKILL.md` |
-| Claude Code ignores rules | `.claude/rules/*.md` missing | Symlink or copy `.mdc` content as `.md` |
+| Claude Code ignores rules | Session started outside the repository root, or `.claude/rules/*.md` missing | Start Claude Code in the repository root; restore the rule files from Git |
 | Cursor rules not active | `.cursor/rules/` not in workspace | Add submodule folder to workspace root |
 
 ---

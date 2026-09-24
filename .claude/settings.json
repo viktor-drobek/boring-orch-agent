@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(python tools/pipeline.py:*)",
+      "Bash(python3 tools/pipeline.py:*)",
+      "Bash(.venv/bin/python tools/pipeline.py:*)",
+      "Bash(python -m behave:*)",
+      "Bash(python3 -m behave:*)",
+      "Bash(.venv/bin/python -m behave:*)",
+      "Bash(python -m unittest:*)",
+      "Bash(python3 -m unittest:*)",
+      "Bash(.venv/bin/python -m unittest:*)",
+      "Bash(python tools/version.py check:*)",
+      "Bash(python3 tools/version.py check:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  }
+}
