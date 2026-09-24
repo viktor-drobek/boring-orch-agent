@@ -38,6 +38,9 @@ DEFAULT_WARMUP_MODEL = "ndsub/qwen3.8-27b"
 DEFAULT_WARMUP_CONTEXT_TOKENS = 262_144
 MIN_WARMUP_CONTEXT_TOKENS = 100_000
 WARMUP_STEPS = ("/compact", "/rpa-init")
+# Executor error kinds that prove a warm-up command did not complete. Anything
+# else, including ``unknown`` or an unclassified exception, becomes recovering.
+CONFIRMED_FAILURE_KINDS = frozenset({"permanent", "transient", "validation", "cancelled"})
 
 SESSION_STATES = frozenset({
     "new", "warming", "ready", "running", "completed", "failed",
@@ -171,7 +174,11 @@ class SessionLifecycle:
 
     def _ensure_schema(self) -> None:
         with self.store.transaction() as db:
-            db.executescript(LIFECYCLE_SCHEMA)
+            # executescript() would COMMIT the caller's BEGIN IMMEDIATE first;
+            # individual DDL statements stay inside the serialized transaction.
+            for statement in LIFECYCLE_SCHEMA.split(";"):
+                if statement.strip():
+                    db.execute(statement)
             row = db.execute("SELECT value FROM lifecycle_meta WHERE key='schema_version'").fetchone()
             if row is None:
                 db.execute("INSERT INTO lifecycle_meta(key,value) VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
@@ -562,11 +569,16 @@ class SessionLifecycle:
                     target_session = first["session_id"]
                 else:
                     target_session = self._branch_locked(db, first["session_id"], child["id"])
-                db.execute("UPDATE lifecycle_jobs SET session_id=?,state='ready',updated_at=? WHERE id=?",
-                           (target_session, time.time(), child["id"]))
-                self._event(db, "job", child["id"], "job.ready", session_id=target_session,
-                            branch=(target_session != first["session_id"]))
-            target_session = db.execute("SELECT session_id FROM lifecycle_jobs WHERE id=?", (child["id"],)).fetchone()[0]
+                branch = target_session != first["session_id"]
+            else:
+                # An explicitly mentioned session is kept. Readiness does not
+                # grant concurrent use: start_job still refuses a session with
+                # a running run, so reuse remains sequential.
+                target_session = child["session_id"]
+                branch = False
+            db.execute("UPDATE lifecycle_jobs SET session_id=?,state='ready',updated_at=? WHERE id=?",
+                       (target_session, time.time(), child["id"]))
+            self._event(db, "job", child["id"], "job.ready", session_id=target_session, branch=branch)
             for dependency in dependency_rows:
                 result = json.loads(dependency["result"]) if dependency["result"] else None
                 payload = {"job_id": dependency["id"], "session": session_mention(dependency["session_id"]),
@@ -654,11 +666,18 @@ class SessionLifecycle:
                                (command, time.time(), session_id))
             try:
                 result = executor(command, session["warmup_model"], session_id, key)
-                if result is False:
-                    raise RuntimeError("warm-up executor returned false")
             except Exception as exc:
-                self._warmup_failed(session_id, command, str(exc))
-                raise SessionConflict(f"Warm-up {command} failed: {exc}") from exc
+                if self._confirmed_failure(exc):
+                    self._warmup_failed(session_id, command, str(exc))
+                    raise SessionConflict(f"Warm-up {command} failed: {exc}") from exc
+                self._warmup_uncertain(session_id, command, key, str(exc))
+                raise SessionConflict(
+                    f"Warm-up {command} has an unknown outcome; operator confirmation is required: {exc}"
+                ) from exc
+            if result is False:
+                # An explicit False is the executor's confirmed refusal.
+                self._warmup_failed(session_id, command, "warm-up executor returned false")
+                raise SessionConflict(f"Warm-up {command} failed: executor returned false")
             if deadline_at is not None and time.time() >= deadline_at:
                 self._warmup_failed(session_id, command, "warm-up deadline exceeded")
                 raise SessionConflict("Warm-up exceeded the job deadline")
@@ -677,6 +696,25 @@ class SessionLifecycle:
                        (time.time(), session_id))
             self._event(db, "session", session_id, "session.warmup.completed", steps=completed)
         return WarmupResult(session_id, session["warmup_model"], tuple(completed))
+
+    @staticmethod
+    def _confirmed_failure(exc: Exception) -> bool:
+        """Only a classified, non-unknown executor error proves a step failed.
+
+        Executors report outcomes with an exception ``kind`` (for example the
+        provider's ``ExecutionError``). An ``unknown`` or unclassified error
+        cannot disprove remote execution, so it is never treated as failed.
+        """
+        return getattr(exc, "kind", None) in CONFIRMED_FAILURE_KINDS
+
+    def _warmup_uncertain(self, session_id: str, command: str, key: str, message: str) -> None:
+        with self.store.transaction() as db:
+            self._session_locked(db, session_id)
+            db.execute("UPDATE lifecycle_sessions SET state='recovering',last_error=?,recovery_json=?,updated_at=? WHERE id=?",
+                       (message, canonical({"action": "needs_operator", "phase": "warmup", "command": command,
+                                            "retry_key": key}), time.time(), session_id))
+            self._event(db, "session", session_id, "session.warmup.recovered_unknown", command=command,
+                        idempotency_key=key, error=message)
 
     def _warmup_failed(self, session_id: str, command: str, message: str) -> None:
         with self.store.transaction() as db:
@@ -706,6 +744,13 @@ class SessionLifecycle:
             session = self._session_locked(db, job["session_id"])
             if job["state"] != "ready":
                 raise SessionConflict(f"Job {job_id} changed state during warm-up: {job['state']}")
+            if session["compact_status"] != "succeeded" or session["rpa_init_status"] != "succeeded":
+                raise SessionConflict(
+                    f"Session {session['id']} has not completed /compact then /rpa-init "
+                    f"(state {session['state']}); retry its warm-up before starting a job"
+                )
+            if session["state"] in {"new", "warming", "recovering"}:
+                raise SessionConflict(f"Session cannot start a job from state {session['state']}")
             active = db.execute("SELECT 1 FROM lifecycle_runs WHERE session_id=? AND state='running'", (session["id"],)).fetchone()
             if active:
                 raise SessionConflict("A lifecycle session cannot be used concurrently")
