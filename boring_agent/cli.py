@@ -8,6 +8,7 @@ import sys
 import time
 import uuid
 
+from . import PRODUCT_NAME
 from .artifacts import read_result
 from .api import make_server
 from .manager import Manager
@@ -23,7 +24,7 @@ def emit(value):
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="boring-orch-agent", description="Durable local agent orchestrator")
+    p = argparse.ArgumentParser(prog=PRODUCT_NAME, description="Durable local agent orchestrator")
     p.add_argument("--home", default=os.environ.get("BOA_HOME", ".boa"), help="SQLite/artifact directory (default: .boa)")
     sub = p.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="Initialize a store without overwriting an existing one")
@@ -91,7 +92,7 @@ def loop(tick, poll, once=False):
 def require_platform(command):
     reason = supported()
     if reason is not None:
-        raise Invalid(f"boring-orch-agent runs on Linux only (needs /proc process identity and flock); "
+        raise Invalid(f"{PRODUCT_NAME} runs on Linux only (needs /proc process identity and flock); "
                       f"cannot start {command}: {reason}")
 
 

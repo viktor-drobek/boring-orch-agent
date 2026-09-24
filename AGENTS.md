@@ -1,10 +1,10 @@
-# boring-orch-agent instructions
+# boring-agent instructions
 
 This is the canonical project brief for Codex, Claude, Cursor, Coddy, and other coding agents. The companion rule trees refine these instructions by file type; their content must remain aligned.
 
 ## Project purpose
 
-The project provides a local SQLite-backed manager-worker orchestrator for bounded agent tasks. Its public API is HTTP `/api/v1`; its command-line entry point is `boring-orch-agent`. The architecture and operating contract are in `docs/architecture.md`, `docs/api-v1.md`, and `docs/job-descriptions.md`.
+The project provides a local SQLite-backed manager-worker orchestrator for bounded agent tasks. Its public API is HTTP `/api/v1`; its command-line entry point is `boring-agent`. The architecture and operating contract are in `docs/architecture.md`, `docs/api-v1.md`, and `docs/job-descriptions.md`.
 
 ## Operating an agent task
 
@@ -34,6 +34,12 @@ Native jobs may use an exact `@session:<id>` mention. Coddy resolves it as a rea
 A new session runs `/compact` followed by `/rpa-init` before its first job, using a model with at least 100,000 context tokens (`ndsub/qwen3.8-27b`, 262,144 by default). Warm-up time counts against the job deadline. Stable idempotency keys prevent duplicate confirmed steps; an uncertain external outcome becomes `recovering` and needs operator-confirmed retry with the same key.
 
 A linear dependent may reuse a completed session only sequentially. A 1-to-N fan-out creates independent child sessions with shared lineage, so concurrent jobs never share a live session. Transfers contain only the verified result and read-only session mention. Restart recovery preserves evidence and never automatically replays an unknown run or transfer. Native lifecycle history remains separate from legacy `llm`/`demo` task history.
+
+## Legacy worker provider boundary
+
+Legacy `llm` tasks retain `openai`, `anthropic`, and `ollama` as stateless completion adapters. The separate `coddy` provider uses `POST /v1/responses`, one stable `X-Coddy-Session-ID` per task, SSE completion checks, and durable `/compact` then `/rpa-init` warm-up. It may serialize `coddy.mention` as `@agent:<name>` plus full `spawn_agent` arguments in the same Coddy session. The child permission mode inherits from the resumed or current session and may only narrow it. Keep provider URLs, bearer tokens, and other connection secrets in operator configuration, never in task JSON.
+
+This legacy HTTP adapter does not change the native exec rule above. Native jobs still launch through the parent's `spawn_agent` tool and must not make direct provider calls.
 
 ## Development workflow
 

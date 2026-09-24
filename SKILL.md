@@ -1,18 +1,34 @@
 ---
-name: boring-orch-agent
+name: boring-agent
 version: 0.1.5
 description: >
-  Run when the user asks to work with the boring-orch-agent orchestrator,
+  Run when the user asks to work with the boring-agent orchestrator,
   submit or manage tasks, configure workers, or develop the orchestrator itself.
   Provides canonical project instructions for Codex, Coddy, Claude, and Cursor.
 metadata:
-  boring-orch-agent:
+  boring-agent:
     emoji: "⚙️"
-    homepage: "https://github.com/viktor-drobek/boring-orch-agent"
-    docs: "https://github.com/viktor-drobek/boring-orch-agent/tree/main/docs"
+    homepage: "https://github.com/viktor-drobek/boring-agent"
+    docs: "https://github.com/viktor-drobek/boring-agent/tree/main/docs"
 ---
 
-# boring-orch-agent Skill
+# boring-agent compatibility skill
+
+The canonical Coddy project agent is `.coddy/agents/boring-agent.md`. This
+file remains the plugin-compatible slash-command entry point for clients that
+discover `SKILL.md` but do not yet discover project agent definitions.
+
+## Mandatory Coddy execution subagent
+
+When this compatibility skill runs under Coddy, treat it as the canonical
+project agent does: inspect, plan, and review in the current session, but
+delegate all implementation, test, build, packaging, and release operations
+through `spawn_agent` with `agent="exec"`. Give `exec` a self-contained job and
+review its report and resulting diff. Do not pin its model, reasoning level, or
+permission mode; those capabilities must be inherited and may only narrow.
+
+If `exec` is unavailable or Coddy refuses the nested spawn, report `BLOCKED`
+with the exact reason. Do not execute the work directly as a fallback.
 
 ## When to use
 
@@ -25,7 +41,7 @@ Activate this skill whenever the user:
 
 ## Project Overview
 
-`boring-orch-agent` is a durable, local SQLite-backed manager-worker orchestrator
+`boring-agent` is a durable, local SQLite-backed manager-worker orchestrator
 for bounded agent tasks. It accepts an immutable task document, records the
 command in SQLite, dispatches it to a compatible worker, and retains the task
 history and validated result.

@@ -1,6 +1,6 @@
 # Architecture
 
-`boring-orch-agent` has one local SQLite transaction domain and three long-lived roles:
+`boring-agent` has one local SQLite transaction domain and three long-lived roles:
 
 ```mermaid
 flowchart LR
@@ -27,3 +27,35 @@ flowchart LR
 - Runners write their output to `logs/<attempt_id>.log` under the store home. A runner that cannot record its own process identity fails the attempt before starting, and a runner that exits without claiming is relaunched with exponential backoff.
 
 The HTTP API and CLI use the same `Store` methods, so the API does not bypass durable acceptance or state transitions. The API server does not run a manager or worker: start those processes separately for each store.
+
+## Provider boundary
+
+`openai`, `anthropic`, and `ollama` remain stateless completion adapters. The
+`coddy` provider is a separate session-aware adapter for `POST /v1/responses`.
+It keeps one stable `X-Coddy-Session-ID` for a task, validates the session ID
+returned in headers or stream metadata, and accepts both JSON and SSE results.
+An SSE response is complete only after `data: [DONE]`; a truncated or malformed
+stream is `Unknown` because remote completion cannot be disproved.
+
+Before the first work turn, the runner reads `GET /v1/models` and uses only its
+explicit `max_context_tokens` metadata to select a warm-up model. The configured
+`BOA_MODEL` is retained when it advertises at least 100,000 context tokens; an
+unadvertised model ID is never invented. The runner then inspects a requested
+existing session or creates the task's deterministic session. A prepared session
+is adopted only when its snapshot explicitly records successful `/compact` then
+`/rpa-init`, either as command records or adjacent user-command/assistant-success
+pairs; unrelated messages clear pending proof. A nonzero message count is not
+preparation evidence. A new session
+runs those commands in order, with each successful step recorded durably. A resumed session may inherit its current
+permission mode only when that session snapshot exists; a missing or new session
+starts at `ask` and cannot inherit bypass authority. A subagent mention serializes
+`@agent:<name>` plus the complete `spawn_agent` argument object into the same
+session. Its explicit permission mode is clamped to the parent's authority.
+
+Coddy HTTP 409 and 429 responses are confirmed transient admission failures.
+Known input and authorization failures are permanent. Connection loss,
+ambiguous server failures, an incomplete stream, or an error after streamed
+content retain `Unknown` semantics and are never replayed automatically.
+This includes an error after any tool or possible side-effect event and a
+`[DONE]`-only stream without a nonblank string `finish_reason` or
+`coddy_meta.stop_reason`.

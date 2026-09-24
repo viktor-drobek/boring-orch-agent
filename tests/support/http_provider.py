@@ -21,6 +21,43 @@ def completion(kind, action, usage=True, truncated=False):
             **({"usage": {"prompt_tokens": 20, "completion_tokens": 10}} if usage else {})}
 
 
+def coddy_stream(content, *, usage=True, finish_reason="stop", stop_reason="end_turn",
+                 session_id="sess_0123456789abcdef01234567"):
+    """Coddy's /v1/responses dialect: chat deltas plus named SSE events."""
+    frames = [
+        'data: ' + json.dumps({
+            "id": "resp_fixture",
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+        }),
+        'data: ' + json.dumps({
+            "id": "resp_fixture",
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+        }),
+    ]
+    if usage:
+        frames.append("event: token_usage\n" +
+                      'data: ' + json.dumps({"prompt_tokens": 20, "completion_tokens": 10,
+                                             "total_tokens": 30}))
+    frames.extend([
+        'data: ' + json.dumps({
+            "id": "resp_fixture",
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+        }),
+        "event: coddy_meta\n" +
+        'data: ' + json.dumps({"session_id": session_id, "stop_reason": stop_reason}),
+        "data: [DONE]",
+        "",
+    ])
+    return (200, "text/event-stream", "\n\n".join(frames), {"X-Coddy-Session-ID": session_id})
+
+
+def json_response(status, body, headers=None):
+    return status, "application/json", json.dumps(body), headers or {}
+
+
 @contextmanager
 def server(responses):
     scripted = queue.Queue()
@@ -33,9 +70,12 @@ def server(responses):
         def log_message(self, *args):
             pass
 
-        def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            requests.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}, "body": body})
+        def handle_request(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length)
+            body = json.loads(raw) if raw else None
+            requests.append({"method": self.command, "path": self.path,
+                             "headers": {k.lower(): v for k, v in self.headers.items()}, "body": body})
             entered.set()
             try:
                 response = scripted.get_nowait()
@@ -44,18 +84,28 @@ def server(responses):
             if response == "wait":
                 release.wait(5)
                 response = (200, completion("openai", {"action": "final", "result": {"ok": True}}))
-            status, obj = response
-            encoded = json.dumps(obj).encode()
+            if len(response) == 2:
+                status, obj = response
+                content_type, encoded, extra_headers = "application/json", json.dumps(obj).encode(), {}
+            else:
+                status, content_type, payload, extra_headers = response
+                encoded = payload.encode() if isinstance(payload, str) else payload
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(encoded)))
             if status == 302:
                 self.send_header("Location", "/credential-leak")
+            for name, value in extra_headers.items():
+                self.send_header(name, value)
             self.end_headers()
             try:
                 self.wfile.write(encoded)
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+        do_POST = handle_request
+        do_PATCH = handle_request
+        do_GET = handle_request
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     httpd.daemon_threads = True

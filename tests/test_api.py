@@ -44,7 +44,7 @@ class ApiTests(unittest.TestCase):
         connection.request("GET", "/api/v1/health")
         response = connection.getresponse()
         self.assertEqual(response.status, 401)
-        self.assertEqual(response.getheader("WWW-Authenticate"), 'Bearer realm="boring-orch-agent"')
+        self.assertEqual(response.getheader("WWW-Authenticate"), 'Bearer realm="boring-agent"')
         connection.close()
         status, value = self.request("GET", "/api/v1/health")
         self.assertEqual(status, 200)

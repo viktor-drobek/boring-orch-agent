@@ -1,6 +1,6 @@
 # Installation Instructions
 
-How to add the **boring-orch-agent** skill / project rules to Codex, Coddy, Claude, and Cursor.
+How to add the **boring-agent** project agent, compatibility skill, and rules to Codex, Coddy, Claude, and Cursor.
 
 > **Note:** This repository is also a Git submodule. If you arrived here as a
 > submodule of a parent project, the paths below are relative to the submodule
@@ -19,15 +19,15 @@ hook bridge that loads rules from `.cursor/rules/`.
 1. Copy the plugin descriptor into Codex's plugin directory:
 
    ```bash
-   mkdir -p ~/.codex/plugins/boring-orch-agent
-   cp .codex-plugin/plugin.json ~/.codex/plugins/boring-orch-agent/
+   mkdir -p ~/.codex/plugins/boring-agent
+   cp .codex-plugin/plugin.json ~/.codex/plugins/boring-agent/
    ```
 
 2. Copy the skill and hook files:
 
    ```bash
-   cp SKILL.md ~/.codex/plugins/boring-orch-agent/
-   cp -r .codex/hooks.json .codex/hooks/ ~/.codex/plugins/boring-orch-agent/ 2>/dev/null || true
+   cp SKILL.md ~/.codex/plugins/boring-agent/
+   cp -r .codex/hooks.json .codex/hooks/ ~/.codex/plugins/boring-agent/ 2>/dev/null || true
    ```
 
 3. Trust the hooks once per clone (Codex tracks by content hash):
@@ -47,7 +47,7 @@ If your Codex setup does not use plugins, symlink the repository into a path
 Codex indexes:
 
 ```bash
-ln -s "$(pwd)" ~/.codex/projects/boring-orch-agent
+ln -s "$(pwd)" ~/.codex/projects/boring-agent
 ```
 
 Then trust hooks as shown above.
@@ -56,28 +56,35 @@ Then trust hooks as shown above.
 
 ## Coddy
 
-Coddy discovers skills from `skills.dirs` (defaults include `~/.coddy/skills/` and
-`${CWD}/.coddy/skills/`).
-
-### Quick install
+The canonical project agent is `.coddy/agents/boring-agent.md`. From this
+checkout, inspect and approve it once for the workspace:
 
 ```bash
-# 1. Link or copy the skill into Coddy's skill directory
-mkdir -p ~/.coddy/skills
-ln -s "$(pwd)" ~/.coddy/skills/boring-orch-agent
-
-# 2. (Optional) Add to skills.dirs if not already covered
-coddy config set skills.dirs='["~/.agents/skills", "~/.coddy/skills", "${CWD}/.coddy/skills"]'
+coddy agents list --cwd "$(pwd)"
+coddy agents trust boring-agent --cwd "$(pwd)"
 ```
 
-### Verify
+The approval is bound to the canonical workspace path and file digest. Editing
+the definition requires a new approval. The definition intentionally omits a
+model and permission mode, so both are inherited and can never be widened.
+
+The project agent is a coordinator and must delegate every execution step to
+the configured `exec` subagent. If `boring-agent` itself is spawned as a child,
+that delegation is nested one level deeper. Set `subagents.max_depth: 2` (YAML:
+`subagents: {max_depth: 2}`) or greater in Coddy's configuration, and ensure
+that an `exec` definition is visible. The default depth of 1 lets the root
+spawn `boring-agent` but withholds `spawn_agent` from it, so the project agent
+will correctly stop with `BLOCKED` instead of bypassing `exec`.
+
+`SKILL.md` remains a compatibility entry point for clients that discover
+slash-command skills but not project agents. To install that optional wrapper
+globally:
 
 ```bash
-coddy skills list | grep boring-orch-agent
+mkdir -p ~/.coddy/skills/boring-agent
+cp SKILL.md ~/.coddy/skills/boring-agent/SKILL.md
+coddy skills list | grep boring-agent
 ```
-
-The skill auto-activates when the user asks about orchestrator tasks, workers,
-managers, or the `boring-orch-agent` CLI / API.
 
 ---
 
@@ -90,15 +97,15 @@ Claude Code reads `.claude/rules/*.md` for project-specific instructions.
 1. Copy the plugin descriptor:
 
    ```bash
-   mkdir -p ~/.claude/plugins/boring-orch-agent
-   cp .claude-plugin/plugin.json ~/.claude/plugins/boring-orch-agent/
+   mkdir -p ~/.claude/plugins/boring-agent
+   cp .claude-plugin/plugin.json ~/.claude/plugins/boring-agent/
    ```
 
 2. Copy the skill file (Claude Code ignores `SKILL.md` by default, but keeps it
    for reference):
 
    ```bash
-   cp SKILL.md ~/.claude/plugins/boring-orch-agent/
+   cp SKILL.md ~/.claude/plugins/boring-agent/
    ```
 
 3. Symlink the rules into the project's `.claude/rules/` (if working inside the
@@ -127,8 +134,8 @@ Cursor natively reads `.cursor/rules/*.mdc` and discovers plugins through
 1. Copy the plugin descriptor:
 
    ```bash
-   mkdir -p ~/.cursor/plugins/boring-orch-agent
-   cp .cursor-plugin/plugin.json ~/.cursor/plugins/boring-orch-agent/
+   mkdir -p ~/.cursor/plugins/boring-agent
+   cp .cursor-plugin/plugin.json ~/.cursor/plugins/boring-agent/
    ```
 
 2. The rules are already present in `.cursor/rules/*.mdc`. If you are consuming
@@ -145,7 +152,9 @@ Cursor natively reads `.cursor/rules/*.mdc` and discovers plugins through
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Codex does not load rules | Hooks not trusted | Run `codex /hooks` and approve |
-| Coddy does not list skill | `skills.dirs` missing path | Check `coddy config get skills.dirs` and add `~/.coddy/skills` |
+| Coddy refuses the project agent | Definition needs workspace approval | Run `coddy agents trust boring-agent --cwd "$(pwd)"` |
+| `boring-agent` reports `BLOCKED` before execution | `exec` is missing or nested spawning is limited to depth 1 | Configure `exec` and set `subagents.max_depth: 2` or greater |
+| Coddy does not list compatibility skill | `skills.dirs` missing path | Check the configured skill directories and the copied `SKILL.md` |
 | Claude Code ignores rules | `.claude/rules/*.md` missing | Symlink or copy `.mdc` content as `.md` |
 | Cursor rules not active | `.cursor/rules/` not in workspace | Add submodule folder to workspace root |
 
@@ -161,3 +170,4 @@ same commit per the [Rules Sync](AGENTS.md#rules-sync) contract:
 - `.claude/rules/*.md`
 - `.codex/rules.md`
 - `.coddy/rules/*.md`
+- `.coddy/agents/*.md`

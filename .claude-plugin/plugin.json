@@ -1,13 +1,13 @@
 {
-  "name": "boring-orch-agent",
+  "name": "boring-agent",
   "description": "Durable local manager-worker orchestrator for bounded agent tasks. Provides canonical project instructions for working with SQLite-backed task dispatch, state management, and the HTTP /api/v1 API.",
   "version": "0.1.5",
   "author": {
     "name": "Viktor Drobek",
     "email": "viktor@drobek.dev"
   },
-  "homepage": "https://github.com/viktor-drobek/boring-orch-agent",
-  "repository": "https://github.com/viktor-drobek/boring-orch-agent",
+  "homepage": "https://github.com/viktor-drobek/boring-agent",
+  "repository": "https://github.com/viktor-drobek/boring-agent",
   "license": "MIT",
   "keywords": [
     "orchestrator",

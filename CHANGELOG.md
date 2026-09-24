@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add a dedicated `coddy` provider for `POST /v1/responses`, with stable `X-Coddy-Session-ID`, JSON and SSE parsing, named event capture, safe error classification, and no behavior changes for the existing OpenAI, Anthropic, or Ollama adapters.
+- Add durable Coddy session preparation. New task sessions run `/compact` and `/rpa-init` once; prepared resumed sessions are adopted without repeating warm-up.
+- Add strict `coddy` task options for session reuse, streaming, permission inheritance, and complete `coddy.mention` serialization through `@agent:<name>` and `spawn_agent`. Child permission mode may only narrow the current Coddy session.
+- Qualify warm-up models from Coddy's advertised context metadata, forward direct-turn output caps, require explicit ordered and adjacent preparation evidence for existing resumed sessions, refuse inherited bypass when the snapshot is missing, and keep malformed terminal or post-tool SSE ambiguity non-replayable.
+- Package project skills, agent/rule trees, plugin manifests, documentation, examples, features, and tools in both source and wheel distributions.
+- Rename the distribution and primary command to `boring-agent`, retain `boring-orch-agent` as a compatibility console alias, and add the canonical project definition `.coddy/agents/boring-agent.md` while keeping `SKILL.md` as a plugin compatibility entry point.
+
 ## 0.1.5
 
 Correction release for 0.1.4, following the review in `release-0.1.4-review.md`.

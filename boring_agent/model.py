@@ -52,6 +52,8 @@ class SessionNotFound(SessionError, NotFound):
 
 SESSION_DIGEST_MAX_BYTES = 24 * 1024
 SESSION_MENTION_RE = re.compile(r"^@session:([A-Za-z0-9][A-Za-z0-9._:-]{0,199})$")
+CODDY_SESSION_ID_RE = re.compile(r"^sess_[0-9a-f]{24}$")
+PERMISSION_MODES = frozenset({"ask", "accept_edits", "bypass"})
 
 
 def canonical(value: Any) -> str:
@@ -75,6 +77,13 @@ def session_mention(session_id: str) -> str:
     if not isinstance(session_id, str) or SESSION_MENTION_RE.fullmatch("@session:" + session_id) is None:
         raise Invalid("session ID is not valid for an @session mention")
     return "@session:" + session_id
+
+
+def coddy_session_id_from_mention(value: str | None) -> str | None:
+    session_id = session_id_from_mention(value)
+    if session_id is not None and CODDY_SESSION_ID_RE.fullmatch(session_id) is None:
+        raise Invalid("coddy.session must name sess_ followed by 24 lowercase hexadecimal characters")
+    return session_id
 
 
 def validate_native_job(raw: dict) -> dict:
@@ -166,10 +175,67 @@ def number(value, label, low, high, integer=False):
     return value
 
 
+def validate_coddy(raw, objective: str, runtime: str) -> dict | None:
+    if raw is None:
+        return None
+    if runtime != "llm":
+        raise Invalid("coddy options require the llm runtime")
+    fields(raw, {"session", "permission_mode", "stream", "mention"}, "coddy")
+    session_id = coddy_session_id_from_mention(raw.get("session"))
+    permission_mode = raw.get("permission_mode")
+    if permission_mode is not None and permission_mode not in PERMISSION_MODES:
+        raise Invalid("coddy.permission_mode must be ask, accept_edits or bypass")
+    if permission_mode == "bypass" and session_id is None:
+        raise Invalid("coddy.permission_mode=bypass requires an explicit resumed coddy.session")
+    stream = raw.get("stream", True)
+    if not isinstance(stream, bool):
+        raise Invalid("coddy.stream must be boolean")
+    mention = raw.get("mention")
+    normalized_mention = None
+    if mention is not None:
+        fields(mention, {"agent", "prompt", "description", "background", "expected_seconds",
+                         "timeout_seconds", "model", "reasoning", "notify_on_finish",
+                         "permission_mode"}, "coddy.mention")
+        agent = mention.get("agent")
+        if not isinstance(agent, str) or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", agent) is None:
+            raise Invalid("coddy.mention.agent must be a valid subagent name")
+        prompt = mention.get("prompt", objective)
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > 32 * 1024:
+            raise Invalid("coddy.mention.prompt must contain 1–32768 UTF-8 bytes")
+        normalized_mention = {"agent": agent, "prompt": prompt}
+        for name in ("description", "model", "reasoning"):
+            value = mention.get(name)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip() or len(value) > 200:
+                    raise Invalid(f"coddy.mention.{name} must contain 1–200 characters")
+                normalized_mention[name] = value
+        for name in ("background", "notify_on_finish"):
+            value = mention.get(name, False)
+            if not isinstance(value, bool):
+                raise Invalid(f"coddy.mention.{name} must be boolean")
+            normalized_mention[name] = value
+        for name in ("expected_seconds", "timeout_seconds"):
+            value = mention.get(name)
+            if value is not None:
+                number(value, f"coddy.mention.{name}", .1, 86400)
+                normalized_mention[name] = value
+        child_permission = mention.get("permission_mode")
+        if child_permission is not None:
+            if child_permission not in PERMISSION_MODES:
+                raise Invalid("coddy.mention.permission_mode must be ask, accept_edits or bypass")
+            normalized_mention["permission_mode"] = child_permission
+    return {
+        "session": session_mention(session_id) if session_id else None,
+        "permission_mode": permission_mode,
+        "stream": stream,
+        "mention": normalized_mention,
+    }
+
+
 def validate_spec(raw: dict, workspace_root: Path, allow_write: bool) -> dict:
     fields(raw, {"schema_version", "objective", "runtime", "workspace", "model",
                  "sandbox", "tools", "output_schema", "budget", "retry", "demo", "expect_files",
-                 "workflow"}, "task")
+                 "workflow", "coddy"}, "task")
     if type(raw.get("schema_version", 1)) is not int or raw.get("schema_version", 1) != 1:
         raise Invalid("Only schema_version 1 is supported")
     objective = raw.get("objective")
@@ -284,12 +350,15 @@ def validate_spec(raw: dict, workspace_root: Path, allow_write: bool) -> dict:
             "planner": workflow.get("planner", {}),
             "authority": workflow.get("authority", {}),
         }
+    coddy = validate_coddy(raw.get("coddy"), objective, runtime)
     spec = {"schema_version": 1, "objective": objective, "runtime": runtime,
             "workspace": str(path), "model": model, "sandbox": sandbox,
             "tools": sorted(set(tools)), "output_schema": schema, "budget": budget, "retry": retry, "demo": demo,
             "expect_files": sorted(set(expect_files))}
     if normalized_workflow is not None:
         spec["workflow"] = normalized_workflow
+    if coddy is not None:
+        spec["coddy"] = coddy
     if len(canonical(spec).encode()) > 256_000:
         raise Invalid("Task specification exceeds 256000 bytes")
     return spec

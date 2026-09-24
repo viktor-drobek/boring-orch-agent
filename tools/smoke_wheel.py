@@ -4,9 +4,36 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import zipfile
+
+
+REQUIRED_ASSETS = (
+    "SKILL.md",
+    ".coddy/agents/boring-agent.md",
+    ".coddy/rules/boring-agent.md",
+    ".codex-plugin/plugin.json",
+    ".claude-plugin/plugin.json",
+    ".cursor/rules/architecture.mdc",
+    ".claude/rules/architecture.md",
+    ".codex/rules.md",
+    "docs/architecture.md",
+    "examples/coddy/README.md",
+    "features/coddy_responses.feature",
+    "tools/pipeline.py",
+)
+
+
+def verify_assets(wheel):
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+    missing = [asset for asset in REQUIRED_ASSETS
+               if not any(name == asset or name.endswith("/" + asset) for name in names)]
+    if missing:
+        raise ValueError("Wheel is missing required integration assets: " + ", ".join(missing))
 
 
 def smoke(wheel):
+    verify_assets(wheel)
     with tempfile.TemporaryDirectory(prefix="boa-wheel-") as directory:
         root = Path(directory)
         installed = root / "installed"

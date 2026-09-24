@@ -1,6 +1,8 @@
-# boring-orch-agent
+# boring-agent
 
-`boring-orch-agent` is a durable, local manager-worker orchestrator for bounded agent tasks. It accepts an immutable task document, records the command in SQLite, dispatches it to a compatible worker, and retains the task history and validated result. It is deliberately small enough to inspect and run on one machine.
+`boring-agent` is a durable, local manager-worker orchestrator for bounded agent tasks. It accepts an immutable task document, records the command in SQLite, dispatches it to a compatible worker, and retains the task history and validated result. It is deliberately small enough to inspect and run on one machine.
+
+The distribution and primary command are named `boring-agent`. Existing installations may continue to use the `boring-orch-agent` console-script alias.
 
 It applies the ideas in Tim Boring’s [*Build an Orchestrator in Go (From Scratch)*](https://books.google.com/books?vid=ISBN9781617299759) to local agent work. This Python implementation is independent software; it does not include the book or its source code.
 
@@ -13,27 +15,27 @@ The orchestrator runs on **Linux only**: process identity comes from `/proc` and
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install boring-orch-agent
+python -m pip install boring-agent
 ```
 
 The offline demo performs one safely replayed failure followed by a successful result. It calls no model provider:
 
 ```bash
-boring-orch-agent --home /tmp/boa-demo demo
+boring-agent --home /tmp/boa-demo demo
 ```
 
 For a durable service, initialize it once and keep the manager and worker in separate terminals:
 
 ```bash
 # terminal 1
-boring-orch-agent --home .boa init --workspace . --max-active 2
-boring-orch-agent --home .boa manager
+boring-agent --home .boa init --workspace . --max-active 2
+boring-agent --home .boa manager
 
 # terminal 2 — offline worker for the included task example
-boring-orch-agent --home .boa worker --id demo --runtime demo --slots 1
+boring-agent --home .boa worker --id demo --runtime demo --slots 1
 
 # terminal 3
-boring-orch-agent --home .boa submit examples/demo-task.json --key demo-001
+boring-agent --home .boa submit examples/demo-task.json --key demo-001
 ```
 
 The reply is a durable receipt. Use the returned `task_id` with `status`, `events`, `wait`, and `result`. A stable idempotency key makes a retried submission return the same receipt instead of creating more work.
@@ -45,7 +47,7 @@ export BOA_PROVIDER=openai
 export BOA_BASE_URL=https://provider.example/v1
 export BOA_MODEL=provider-model-id
 export BOA_API_KEY=provider-api-key
-boring-orch-agent --home .boa worker --id llm-1 --runtime llm --slots 1
+boring-agent --home .boa worker --id llm-1 --runtime llm --slots 1
 ```
 
 The built-in file tools are `list_files` and `read_file`. A task can write only when the installation and worker both explicitly enable `workspace-write`; no shell tool is exposed. Read [the API contract](docs/api-v1.md) before placing the service behind another process or network boundary.
@@ -56,7 +58,7 @@ Run the task API beside the manager and workers:
 
 ```bash
 export BOA_API_TOKEN="replace-with-a-random-secret"
-boring-orch-agent --home .boa serve --host 127.0.0.1 --port 8088
+boring-agent --home .boa serve --host 127.0.0.1 --port 8088
 ```
 
 The API is JSON at `/api/v1`. Every mutable request requires `Authorization: Bearer …` and an `Idempotency-Key`. A receipt means the command is stored; use a task read or result read to learn the execution outcome.
@@ -69,24 +71,26 @@ curl --fail-with-body http://127.0.0.1:8088/api/v1/tasks \
   --data @examples/api/submit-demo.json
 ```
 
-The returned `task_id` can be read from `GET /api/v1/tasks/{task_id}`. See [docs/api-v1.md](docs/api-v1.md) for the complete route and error contract, and [examples/coddy/README.md](examples/coddy/README.md) for using Coddy in `serve` mode through its OpenAI-compatible `/v1` API.
+The returned `task_id` can be read from `GET /api/v1/tasks/{task_id}`. See [docs/api-v1.md](docs/api-v1.md) for the complete route and error contract, and [examples/coddy/README.md](examples/coddy/README.md) for using Coddy through its session-aware Responses API.
 
 ## Coddy as the model provider
 
-Coddy’s `serve` command exposes an OpenAI-compatible `/v1` API. Start Coddy with a bearer token, then point an `llm` worker at it:
+Coddy’s `serve` command exposes `POST /v1/responses`. Start Coddy with a bearer token, then select the dedicated `coddy` provider:
 
 ```bash
 export CODDY_HTTP_TOKEN="replace-with-a-random-secret"
 coddy serve --http --host 127.0.0.1 --port 12345 --auth-token "$CODDY_HTTP_TOKEN"
 
-export BOA_PROVIDER=openai
+export BOA_PROVIDER=coddy
 export BOA_BASE_URL=http://127.0.0.1:12345/v1
 export BOA_MODEL="your-coddy-model-id"
 export BOA_API_KEY="$CODDY_HTTP_TOKEN"
-boring-orch-agent --home .boa worker --id coddy-1 --runtime llm --slots 1
+export BOA_PERMISSION_MODE=ask
+export BOA_CODDY_STREAM=on
+boring-agent --home .boa worker --id coddy-1 --runtime llm --slots 1
 ```
 
-Confirm the model identifier from Coddy with `GET /v1/models` or its `/docs/` page. `boring-orch-agent` sends OpenAI-compatible chat-completion requests; Coddy owns its own model, tool, and permission configuration. Requests carry `response_format: {"type": "json_object"}`, because the loop needs exactly one JSON action per turn; set `BOA_JSON_MODE=off` for a server that rejects that field. The runnable files and two-direction integration steps are in [examples/coddy](examples/coddy/README.md).
+The worker assigns each task a stable `sess_…` ID, sends it in `X-Coddy-Session-ID`, and consumes SSE by default. A new session runs `/compact` and `/rpa-init` once before work. A task can resume a prepared session with `coddy.session`, disable streaming with `coddy.stream`, or delegate through `coddy.mention`; child permission mode is inherited and may only be narrowed. The runnable task and full field reference are in [examples/coddy](examples/coddy/README.md) and [job descriptions](docs/job-descriptions.md).
 
 ## Development and release
 

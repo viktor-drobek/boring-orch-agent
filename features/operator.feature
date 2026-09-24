@@ -13,3 +13,15 @@ Feature: Operators can follow a task through the public CLI
     Then the CLI returns the validated demo result
     And the event history includes "task.finished"
     And the worker kept a launch log for the attempt
+
+  Scenario: Use the renamed command without breaking the legacy entry point
+    Given the installed command metadata
+    Then "boring-agent" is the primary console command
+    And "boring-orch-agent" remains a compatibility console command
+    And CLI help names the program "boring-agent"
+
+  Scenario: The canonical project agent delegates execution to exec
+    Given the canonical boring-agent definition
+    Then the agent requires the "exec" subagent for implementation and verification
+    And the agent refuses to execute directly when "exec" is unavailable
+    And installation requires nested subagent depth 2

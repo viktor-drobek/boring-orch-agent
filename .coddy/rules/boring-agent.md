@@ -27,6 +27,10 @@ An exact `@session:<id>` is a read-only Coddy digest attachment capped at 24 KiB
 
 A single sequential dependent may reuse a completed session. A 1-to-N fan-out creates independent child sessions with shared lineage and never shares a live session concurrently. Restart recovery preserves unknown outcomes and never auto-replays them. Native lifecycle records remain separate from legacy SQLite task history.
 
+## Legacy Coddy provider
+
+The legacy `llm` worker has a separate `coddy` provider for `POST /v1/responses`. It owns a stable `X-Coddy-Session-ID`, validates SSE completion, runs durable `/compact` then `/rpa-init` warm-up, and serializes `coddy.mention` as `@agent:<name>` plus complete `spawn_agent` arguments. Child permission mode inherits from the current session and may only narrow it. URLs and credentials remain operator configuration. This adapter does not permit native exec jobs to call provider HTTP directly.
+
 After a verified outcome, reassess and dispatch the next ready independent job.
 Keep credentials out of prompts, job files and reports. When agent instructions
 change, follow the complete Rules Sync contract in `AGENTS.md`: update paired topic
