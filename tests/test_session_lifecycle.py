@@ -141,6 +141,30 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertEqual(calls[0][3], f"warmup:{session_id}:/compact")
         self.assertEqual([call[0] for call in calls], ["/compact", "/rpa-init"])
 
+    def test_failed_warmup_can_retry_with_its_same_command_key(self):
+        job = self.lifecycle.register_job(self.job("root"))
+        session_id = job["session_id"]
+        failed_calls = []
+
+        def fail(command, model, received_session, key):
+            failed_calls.append((command, model, received_session, key))
+            raise RuntimeError("temporary warm-up failure")
+
+        with self.assertRaises(SessionConflict):
+            self.lifecycle.warm_session(session_id, fail)
+        self.assertEqual(self.lifecycle.session(session_id)["state"], "failed")
+        self.assertEqual(failed_calls[0][3], f"warmup:{session_id}:/compact")
+
+        retry_calls = []
+        result = self.lifecycle.retry_warmup(
+            session_id,
+            lambda *args: retry_calls.append(args) or True,
+        )
+        self.assertEqual(result.session_id, session_id)
+        self.assertEqual(retry_calls[0][3], failed_calls[0][3])
+        self.assertEqual([call[0] for call in retry_calls], ["/compact", "/rpa-init"])
+        self.assertEqual(self.lifecycle.session(session_id)["state"], "ready")
+
     def test_failed_replay_safe_job_can_retry_without_rewarming_session(self):
         job = self.lifecycle.register_job(self.job("root", metadata={"replay_safe": True}))
         calls = self.warm(job["session_id"])

@@ -383,8 +383,6 @@ class Store:
         with self.reading() as db:
             return db.execute("SELECT task_id FROM retention_intents ORDER BY task_id").fetchall()
 
-    retention = retain
-
     def cancel(self, task_id, key):
         self.key_check(key)
         payload_hash = digest({"kind": "cancel", "task_id": task_id})
