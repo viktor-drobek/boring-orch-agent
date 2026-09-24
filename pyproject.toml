@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boring-agent"
-version = "0.2.0"
+version = "0.3.0"
 description = "A durable local manager-worker orchestrator for agent tasks"
 readme = "README.md"
 license = "MIT"
