@@ -41,6 +41,32 @@ paths are mapped into workspace-relative paths that reject escapes and hidden
 components; the mapped path must then be handed to the ordinary `Workspace` tool
 policy, which also refuses symlinked components and the store home.
 
+## Launch environment
+
+The prepared environment is built from an allowlist, never by copying the host
+environment. The same rule applies to both tiers; Tier B has no mount namespace,
+but the scrub still keeps orchestrator and provider secrets out of the agent.
+
+- Copied from the host when present: `PATH`, `LANG`, `LANGUAGE`, `TERM`, `TZ`
+  and every `LC_*` variable.
+- Set by the launch: `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+  `XDG_CACHE_HOME`, `XDG_STATE_HOME` (under `HOME` as `config`, `data`, `cache`,
+  `state`) and the `ACP_DISABLE_*` variables below.
+- `HOME` is the agent home as the agent sees it. In Tier A it is `/.acp-state`,
+  the bind mount of the private state directory; the host path would land on
+  the sandbox's private `/tmp` or `/home` tmpfs and the state would be silently
+  discarded. In Tier B it is the resolved host state path.
+- A task may declare extra names in `environment_passthrough` (a list of
+  variable names); each is copied only if present on the host.
+- Never copied, even when declared: any name starting with `BOA_`, or containing
+  `API_KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL` or
+  `PRIVATE_KEY` (case-insensitive). Declaring one of these refuses the launch.
+- Everything else (`SSH_AUTH_SOCK`, `XDG_RUNTIME_DIR`, `TMPDIR`, proxies, ...) is
+  dropped.
+
+An adapter that needs a credential must receive it through a future, explicit
+adapter credential channel; this contract does not provide one.
+
 ## Agent-owned permissions
 
 An ACP agent's own permission system cannot be bypassed. Any permission mode that
