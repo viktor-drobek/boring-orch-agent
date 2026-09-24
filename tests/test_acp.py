@@ -172,7 +172,9 @@ class ACPOperationTests(unittest.TestCase):
                                   capability="available")
             self.assertEqual(plan.negotiated.model, "fixture-1")
             self.assertEqual(plan.isolation.tier, "A")
-            self.assertEqual(plan.environment["HOME"], str((root / "state").resolve()))
+            # Tier A: the agent sees its state at the bind mount, not the host path.
+            self.assertEqual(plan.environment["HOME"], "/.acp-state")
+            self.assertEqual(plan.security.home, str((root / "state").resolve()))
             task.pop("state_path")
             with self.assertRaisesRegex(ACPError, "private state_path"):
                 prepare_launch(task, ["agent"], {"modes": ["interactive"], "models": ["fixture-1"]}, capability="unavailable")

@@ -152,7 +152,7 @@ class IsolationPlanner:
         command += ["--tmpfs", "/", "--proc", "/proc", "--dev", "/dev",
                     "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", "/home"]
         bind = "--bind" if task.get("sandbox", "read-only") == "workspace-write" else "--ro-bind"
-        command += [bind, workspace, workspace, "--bind", state_path, "/.acp-state"]
+        command += [bind, workspace, workspace, "--bind", state_path, SANDBOX_STATE_PATH]
         for system_path in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"):
             if Path(system_path).exists():
                 command += ["--ro-bind", system_path, system_path]
@@ -190,15 +190,56 @@ def secure_agent(route: Mapping[str, Any], state_path: str) -> AgentSecurity:
     return AgentSecurity(mode, str(Path(state_path).resolve()), restrictions)
 
 
-def secure_environment(base: Mapping[str, str] | None, security: AgentSecurity) -> dict[str, str]:
-    """Build an environment whose home and extension discovery are private."""
-    env = dict(base or os.environ)
-    home = security.home
+# Where Tier A mounts the private agent state directory inside the sandbox.
+SANDBOX_STATE_PATH = "/.acp-state"
+# Host variables copied into every ACP launch (docs/isolation.md, "Launch environment").
+ENVIRONMENT_ALLOWLIST = frozenset({"PATH", "LANG", "LANGUAGE", "TERM", "TZ"})
+ENVIRONMENT_ALLOWED_PREFIXES = ("LC_",)
+# Names that can never be passed through, even when a task declares them.
+ENVIRONMENT_DENIED_PREFIXES = ("BOA_",)
+ENVIRONMENT_DENIED_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE_KEY")
+
+
+def _denied_variable(name: str) -> bool:
+    upper = name.upper()
+    return upper.startswith(ENVIRONMENT_DENIED_PREFIXES) or any(marker in upper for marker in ENVIRONMENT_DENIED_MARKERS)
+
+
+def environment_passthrough(task: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the task's declared pass-through variable names, refusing secrets."""
+    names = task.get("environment_passthrough", ())
+    if isinstance(names, (str, bytes)) or not isinstance(names, Sequence) or \
+            any(not isinstance(name, str) or not name or "=" in name for name in names):
+        raise ACPError("ACP environment_passthrough must be a list of variable names")
+    denied = [name for name in names if _denied_variable(name)]
+    if denied:
+        raise ACPError("ACP environment pass-through may not name secrets: " + ", ".join(denied))
+    return tuple(names)
+
+
+def secure_environment(base: Mapping[str, str] | None, security: AgentSecurity,
+                       home: str | None = None, passthrough: Sequence[str] = ()) -> dict[str, str]:
+    """Build an allowlisted environment whose home and extension discovery are private.
+
+    ``home`` is the agent home as the agent sees it: the in-sandbox mount point
+    for Tier A, the host state path (``security.home``) otherwise.  Nothing from
+    ``base`` is copied unless allowlisted or declared in ``passthrough``.
+    """
+    source = dict(os.environ if base is None else base)
+    denied = [name for name in passthrough if _denied_variable(name)]
+    if denied:
+        raise ACPError("ACP environment pass-through may not name secrets: " + ", ".join(denied))
+    declared = set(passthrough)
+    env = {name: value for name, value in source.items()
+           if not _denied_variable(name) and (name in ENVIRONMENT_ALLOWLIST or name in declared
+                                              or name.startswith(ENVIRONMENT_ALLOWED_PREFIXES))}
+    home = home or security.home
     env.update({
         "HOME": home,
         "XDG_CONFIG_HOME": home + "/config",
         "XDG_DATA_HOME": home + "/data",
         "XDG_CACHE_HOME": home + "/cache",
+        "XDG_STATE_HOME": home + "/state",
         "ACP_DISABLE_PROJECT_HOOKS": "1",
         "ACP_DISABLE_MCP_SERVERS": "1",
         "ACP_DISABLE_SUBAGENTS": "1",
@@ -545,8 +586,12 @@ def prepare_launch(task: Mapping[str, Any], agent_command: Sequence[str],
     budget = evaluate_budgets(task, capabilities if capabilities is not None else adapter_capabilities(agent_command))
     if not budget.allowed:
         raise ACPError(budget.reason)
+    passthrough = environment_passthrough(task)
     negotiated = negotiate(advertisement, task.get("mode"), task.get("model"))
     command = tuple(planner.command(agent_command, task, isolation))
+    # Tier A: the host state path is not visible inside the sandbox (it would
+    # land on the private /tmp or /home tmpfs), so the agent home is the mount.
+    home = SANDBOX_STATE_PATH if isolation.tier == "A" else security.home
     return LaunchPlan(isolation, security, budget, negotiated, command,
-                      secure_environment(base_environment, security))
+                      secure_environment(base_environment, security, home, passthrough))
 
