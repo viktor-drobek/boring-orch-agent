@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Every agent instruction tree and project agent now prefers the Coddy HTTP Responses API, then ACP, then plain CLI, never switches transports to retry an `Unknown` outcome, and, on the first run in a new project, tells the operator the selected transport and asks for the project's permission mode (narrowing only, never `bypass`) and default model.
+
 ## 0.3.0
 
 - Add a Claude Code project agent (`.claude/agents/boring-agent.md`, read-only coordinator run with `claude --agent boring-agent`) and its `exec` subagent (`.claude/agents/exec.md`) for development jobs; both inherit model and permission mode and are packaged in the wheel.
