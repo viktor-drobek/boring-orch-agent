@@ -15,7 +15,7 @@ import uuid
 from jsonschema import Draft202012Validator, SchemaError
 
 from .artifacts import artifact_checksum
-from .model import Conflict, Invalid, canonical, digest, fields, validate_spec
+from .model import Conflict, Invalid, NotFound, canonical, digest, fields, validate_spec
 from .store import event
 
 
@@ -121,7 +121,7 @@ class WorkflowStore:
     def _root_locked(self, db, workflow_id):
         row = db.execute("SELECT * FROM workflow_roots WHERE id=?", (workflow_id,)).fetchone()
         if row is None:
-            raise Invalid(f"Unknown workflow: {workflow_id}")
+            raise NotFound(f"Unknown workflow: {workflow_id}")
         return row
 
     @staticmethod

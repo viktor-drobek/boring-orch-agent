@@ -146,9 +146,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(inventory["inventory"])
         route = {"id": "api-fixture", "executable": sys.executable, "args": ["--version"]}
-        status, approval = self.request("POST", "/api/v1/discovery/approve",
-                                        {"route": route, "tier": "handshake"})
-        self.assertEqual(status, 202)
+        # Approval is operator consent: HTTP refuses it and the operator approves locally.
+        status, refused = self.request("POST", "/api/v1/discovery/approve",
+                                       {"route": route, "tier": "handshake"})
+        self.assertEqual(status, 403)
+        self.assertEqual(refused["error"], "operator_only")
+        self.assertEqual(self.store.discovery_approvals(), [])
+        from boring_agent.discovery import Discovery
+        approval = Discovery(self.store).approve(route, "handshake")
         self.assertEqual(approval["route"], "api-fixture")
         self.assertTrue(approval["fingerprint"])
         status, approvals = self.request("GET", "/api/v1/discovery/approvals")
