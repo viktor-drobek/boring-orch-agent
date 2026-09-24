@@ -22,8 +22,10 @@ effect. It may record:
 - provider URL, model, version and credential references, when configured.
 
 It never calls `--version`, opens a provider URL, reads a credential value, or parses
-YAML. A credential is represented by a reference such as `env:BOA_API_KEY`, never
-by the value in the environment.
+YAML. A credential is represented by a reference, never by its value: `env:NAME` and
+`ref:NAME` both name the environment variable `NAME`, which is read only when an
+approved probe actually starts and is never stored. A generative probe uses the
+route's `credential_ref` when present and `env:BOA_API_KEY` otherwise.
 
 ### Handshake
 
@@ -85,10 +87,12 @@ executable rejects the old approval and requires explicit re-approval. Approval
 records contain only route metadata and fingerprints. They do not contain process
 environment values.
 
-An unlisted route can be used with `allow_unlisted=True` for one explicit invocation.
-That invocation is written to the audit history and does not create a reusable
-approval; a later invocation must receive a new explicit approval or another
-one-time exception.
+An operator working locally in Python may pass `allow_unlisted=True` to run a
+route without an approval record. Every such invocation is written to the audit
+history as `unlisted_invocation` and never creates an approval, so the next call
+without the flag is refused. The flag is **not accepted over HTTP**: a request
+body cannot carry operator consent, and `POST /api/v1/discovery/handshake` or
+`/generative` with `allow_unlisted` returns `400` without running anything.
 
 ## Evidence and credential handling
 
@@ -122,4 +126,5 @@ All endpoints use the normal authenticated API boundary:
 
 Active POST routes must carry the route and the approval identifier returned by the
 approval call. The API does not start discovery from a read request or from Store
-initialization.
+initialization, and it rejects `allow_unlisted`. Discovery has no CLI subcommand
+yet; `boa discover` is planned in `PLAN.md`.

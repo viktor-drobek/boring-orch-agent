@@ -12,8 +12,10 @@ Cancellation has two phases and two independent evidence sources.
 The runtime reports `Cancelled` only when **both** conditions are true:
 
 - the process group is gone; and
-- the adapter has reported a terminal stop reason (`cancelled`, `stopped`,
-  `terminated`, `killed`, `timeout` or `exit`).
+- the adapter has reported a terminal stop reason: one of ACP's own
+  (`cancelled`, `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`) or a
+  process-level outcome the supervisor observed (`stopped`, `terminated`,
+  `killed`, `timeout`, `exit`).
 
 A notification, a signal, or one evidence source by itself is not confirmation.
 Incomplete evidence is `Unknown`; the reservation stays held so a later worker
@@ -23,3 +25,8 @@ resolution is required for an unknown outcome.
 The latency target for sending the cooperative request is separate from the
 bounded termination grace. The contract never converts a timeout in the local
 client into a claim that a remote agent stopped.
+
+`boring_agent.acp.CancellationSupervisor` implements the decision rule; a caller
+must drive it with a timer (poll it on a schedule), reap the child so a zombie
+does not keep the group alive, and supply the real process-group id. A single
+late poll escalates through `SIGTERM` and `SIGKILL` in one call.

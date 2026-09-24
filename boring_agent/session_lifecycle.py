@@ -30,6 +30,9 @@ from .model import (
 
 
 SCHEMA_VERSION = 1
+# Sessions default to asking; an agent that never asks would run with the
+# operator's full rights, which docs/isolation.md refuses.
+DEFAULT_PERMISSION_MODE = "ask"
 DEFAULT_WARMUP_MODEL = "ndsub/qwen3.8-27b"
 DEFAULT_WARMUP_CONTEXT_TOKENS = 262_144
 MIN_WARMUP_CONTEXT_TOKENS = 100_000
@@ -270,6 +273,8 @@ class SessionLifecycle:
             raise Invalid("session mode is required")
         if not isinstance(permission_mode, str) or not permission_mode:
             raise Invalid("session permission_mode is required")
+        if "bypass" in permission_mode.lower() or "skip" in permission_mode.lower():
+            raise Invalid("a native session may not bypass its agent's permission system")
         digest_text = self._validate_digest(digest_text)
         if parent_session_id is not None:
             parent = self._session_locked(db, parent_session_id)
@@ -294,7 +299,7 @@ class SessionLifecycle:
         return session_id
 
     def create_session(self, *, model: str, cwd: str, mode: str = "agent",
-                       permission_mode: str = "bypass", scheduler_job_id: str | None = None,
+                       permission_mode: str = DEFAULT_PERMISSION_MODE, scheduler_job_id: str | None = None,
                        subagent_run: str | None = None, session_id: str | None = None,
                        digest_text: str = "") -> dict:
         """Create one new session atomically; no Coddy process is started."""
@@ -307,12 +312,10 @@ class SessionLifecycle:
             return self._decode_session(self._session_locked(db, created))
 
     def session(self, session_id: str) -> dict:
-        self._ensure_schema()
         with self.store.reading() as db:
             return self._decode_session(self._session_locked(db, session_id))
 
     def sessions(self) -> list[dict]:
-        self._ensure_schema()
         with self.store.reading() as db:
             return [self._decode_session(row) for row in db.execute(
                 "SELECT * FROM lifecycle_sessions ORDER BY created_at,id")]
@@ -350,13 +353,14 @@ class SessionLifecycle:
         for dependency in dependencies:
             if db.execute("SELECT 1 FROM lifecycle_jobs WHERE id=?", (dependency,)).fetchone() is None:
                 raise Invalid(f"Unknown native job dependency: {dependency}")
+        workspace = self._validated_workspace(spec.get("workspace"))
         session_id = session_id_from_mention(spec.get("session"))
         if session_id is not None:
             self._session_locked(db, session_id)
         elif not dependencies:
             session_id = self._insert_session_locked(
-                db, requested_model=spec["model"], cwd=spec.get("workspace") or str(self.store.home),
-                mode="agent", permission_mode="bypass", scheduler_job_id=job_id,
+                db, requested_model=spec["model"], cwd=workspace,
+                mode="agent", permission_mode=DEFAULT_PERMISSION_MODE, scheduler_job_id=job_id,
             )
         now = time.time()
         state = "ready" if not dependencies and session_id else "pending"
@@ -368,6 +372,18 @@ class SessionLifecycle:
         )
         self._event(db, "job", job_id, "job.registered", session_id=session_id, dependencies=dependencies)
         return self._decode_job(self._job_locked(db, job_id))
+
+    def _validated_workspace(self, workspace) -> str:
+        """A native job runs in an existing absolute directory that is not the store."""
+        if not isinstance(workspace, str) or not workspace:
+            raise Invalid("native job workspace is required")
+        path = Path(workspace)
+        if not path.is_absolute() or not path.is_dir():
+            raise Invalid("native job workspace must be an existing absolute directory")
+        resolved, home = path.resolve(), self.store.home.resolve()
+        if resolved == home or home in resolved.parents:
+            raise Invalid("the store home cannot be a native job workspace")
+        return str(resolved)
 
     def register_workflow(self, raw_jobs: Iterable[dict]) -> list[dict]:
         """Register a validated dependency graph in one transaction."""
@@ -415,12 +431,10 @@ class SessionLifecycle:
             return [by_id[spec["id"]] for spec in specs]
 
     def job(self, job_id: str) -> dict:
-        self._ensure_schema()
         with self.store.reading() as db:
             return self._decode_job(self._job_locked(db, job_id))
 
     def jobs(self) -> list[dict]:
-        self._ensure_schema()
         with self.store.reading() as db:
             return [self._decode_job(row) for row in db.execute("SELECT * FROM lifecycle_jobs ORDER BY created_at,id")]
 
@@ -458,7 +472,6 @@ class SessionLifecycle:
 
     def branches(self, parent_session_id: str | None = None) -> list[dict]:
         """List deterministic branch lineage without exposing a live session."""
-        self._ensure_schema()
         with self.store.reading() as db:
             if parent_session_id is None:
                 rows = db.execute("SELECT * FROM lifecycle_branches ORDER BY parent_session_id,ordinal")
@@ -692,7 +705,6 @@ class SessionLifecycle:
             return self._decode_job(self._job_locked(db, job_id))
 
     def run_history(self, job_id: str | None = None) -> list[dict]:
-        self._ensure_schema()
         with self.store.reading() as db:
             if job_id is None:
                 rows = db.execute("SELECT * FROM lifecycle_runs ORDER BY started_at,id")
@@ -701,7 +713,6 @@ class SessionLifecycle:
             return [self._decode_run(row) for row in rows]
 
     def transfers(self, job_id: str | None = None) -> list[dict]:
-        self._ensure_schema()
         with self.store.reading() as db:
             sql = "SELECT * FROM lifecycle_transfers"
             params = ()
@@ -712,7 +723,6 @@ class SessionLifecycle:
             return [dict(row) for row in db.execute(sql, params)]
 
     def events(self, entity_type: str | None = None, entity_id: str | None = None) -> list[dict]:
-        self._ensure_schema()
         with self.store.reading() as db:
             sql = "SELECT * FROM lifecycle_events"
             params = []

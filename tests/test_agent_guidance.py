@@ -53,35 +53,23 @@ class AgentGuidanceTests(unittest.TestCase):
                 task = store.task(receipt["task_id"])
                 self.assertEqual(task["spec"]["objective"], raw["objective"])
 
-    def test_exec_launch_contract_is_reachable_from_all_agent_rules(self):
-        reference = "boring_agent/memory/.agents/references/exec.md"
+    def test_exec_contract_is_a_committed_document_referenced_by_every_rule_tree(self):
+        reference = "docs/exec.md"
         contract = (ROOT / reference).read_text(encoding="utf-8")
         for path in ("AGENTS.md", ".cursor/rules/workflow.mdc", ".claude/rules/workflow.md",
                      ".coddy/rules/boring-orch-agent.md"):
             with self.subTest(path=path):
-                self.assertIn(reference, (ROOT / path).read_text(encoding="utf-8"))
-        for marker in ("SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED", "HANDOFF",
-                       "NEEDS_OPERATOR", "NEEDS_MODEL_DECISION", "notify_on_finish",
-                       "Получатель результата", "Модель джобы", "Модель exec"):
+                text = (ROOT / path).read_text(encoding="utf-8")
+                self.assertIn(reference, text)
+                self.assertNotIn("memory/.agents/references", text, "no rule may point at an uncommitted file")
+                self.assertIn("spawn_agent(model=job.model)", text)
+        for marker in ("ParentIdleWatchdog", "NEEDS_MODEL_DECISION", "HANDOFF", "/compact", "/rpa-init", "1800"):
             with self.subTest(marker=marker):
                 self.assertIn(marker, contract)
-        memory = ROOT / "boring_agent/memory"
-        self.assertIn(".agents/references/exec.md", (memory / "AGENTS.md").read_text(encoding="utf-8"))
-        self.assertIn("../.agents/references/exec.md",
-                      (memory / "rules/job-launching.md").read_text(encoding="utf-8"))
-
-    def test_exec_uses_native_job_model_and_ready_only_dispatch(self):
-        contract = (ROOT / "boring_agent/memory/.agents/references/exec.md").read_text(encoding="utf-8")
-        for marker in ("spawn_agent(model=job.model)", "READY", "NOT_READY", "MODEL_MISMATCH",
-                       "execution_mode: coddy_native", "--count", "budget.max_steps"):
-            self.assertIn(marker, contract)
-        self.assertNotIn("PYTHON -m boring_agent --home HOME submit SPEC", contract)
-        self.assertNotIn("PYTHON -m boring_agent.watch", contract)
-        for path in ("AGENTS.md", ".cursor/rules/workflow.mdc", ".claude/rules/workflow.md",
-                     ".coddy/rules/boring-orch-agent.md"):
-            with self.subTest(path=path):
-                self.assertIn("spawn_agent(model=job.model)", (ROOT / path).read_text(encoding="utf-8"))
-
+        # The document describes the columns the lifecycle store actually has.
+        self.assertIn("attempt_count", contract)
+        self.assertNotIn("execution_authorized", contract)
+        self.assertNotIn("native_attempt_count", contract)
 
 if __name__ == "__main__":
     unittest.main()

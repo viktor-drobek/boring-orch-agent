@@ -21,8 +21,11 @@ from .model import Invalid, canonical
 ISOLATION_AVAILABLE = "available"
 ISOLATION_UNAVAILABLE = "unavailable"
 ISOLATION_UNKNOWN = "unknown"
+# ACP's own stop reasons (end_turn, max_tokens, max_turn_requests, refusal,
+# cancelled) plus the process-level outcomes a supervisor can observe.
 TERMINAL_STOP_REASONS = frozenset({
     "cancelled", "canceled", "stopped", "terminated", "killed", "timeout", "exit",
+    "end_turn", "max_tokens", "max_turn_requests", "refusal",
 })
 
 
@@ -67,8 +70,10 @@ class IsolationPlanner:
     it must never be described as isolated.
     """
 
-    def __init__(self, capability: str | None = None, which: Callable[[str], str | None] = shutil.which):
+    def __init__(self, capability: str | None = None, which: Callable[[str], str | None] = shutil.which,
+                 store_home: str | Path | None = None):
         self._which = which
+        self.store_home = Path(store_home).resolve() if store_home else None
         self.capability = capability if capability is not None else self._detect()
 
     def _detect(self) -> str:
@@ -95,6 +100,12 @@ class IsolationPlanner:
         state_path = task.get("state_path", task.get("agent_state_dir"))
         if state_path is not None and (not isinstance(state_path, str) or not state_path):
             raise ACPError("ACP state_path must be a nonempty path")
+        if self.store_home is not None:
+            # The store home is never a workspace or an agent home: it holds the
+            # database, artifacts, locks and logs the agent must not reach.
+            for label, value in (("workspace", workspace), ("state_path", state_path)):
+                if value and (Path(value).resolve() == self.store_home or self.store_home in Path(value).resolve().parents):
+                    raise IsolationError(f"ACP {label} may not lie inside the store home")
         if self.capability == ISOLATION_AVAILABLE:
             return IsolationDecision(
                 capability=self.capability, tier="A", allowed=True,
@@ -132,17 +143,16 @@ class IsolationPlanner:
         if not isinstance(state_path, str) or not state_path:
             raise ACPError("Tier A requires a private state_path")
         state_path = str(Path(state_path).resolve())
-        command = [self._which("bwrap") or "bwrap", "--die-with-parent", "--new-session",
-                   "--unshare-pid", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-                   "--tmpfs", "/run", "--tmpfs", "/home"]
+        command = [self._which("bwrap") or "bwrap", "--die-with-parent", "--new-session", "--unshare-pid"]
         if not decision.network_enabled:
             command.append("--unshare-net")
-        # A tmpfs root is important: merely omitting a bind does not hide an
-        # absolute store path because bubblewrap otherwise exposes the host root.
-        command += ["--tmpfs", "/", "--ro-bind", workspace, workspace]
-        if task.get("sandbox", "read-only") == "workspace-write":
-            command[-2:] = ["--bind", workspace, workspace]
-        command += ["--bind", state_path, "/.acp-state"]
+        # bubblewrap applies mount operations in argument order. The tmpfs root
+        # comes first so that it hides the host filesystem (omitting a bind is not
+        # enough), and every later mount lands on top of it.
+        command += ["--tmpfs", "/", "--proc", "/proc", "--dev", "/dev",
+                    "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", "/home"]
+        bind = "--bind" if task.get("sandbox", "read-only") == "workspace-write" else "--ro-bind"
+        command += [bind, workspace, workspace, "--bind", state_path, "/.acp-state"]
         for system_path in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"):
             if Path(system_path).exists():
                 command += ["--ro-bind", system_path, system_path]
@@ -166,7 +176,10 @@ def secure_agent(route: Mapping[str, Any], state_path: str) -> AgentSecurity:
     if not isinstance(state_path, str) or not state_path:
         raise ACPError("isolated ACP home is required")
     mode = route.get("permission_mode", "default")
-    if mode == "bypass" or route.get("bypass_permissions"):
+    # Adapters spell this differently (bypass, bypassPermissions, --dangerously-skip-permissions);
+    # any spelling of "never ask" is refused.
+    if (not isinstance(mode, str) or "bypass" in mode.lower() or "skip" in mode.lower()
+            or route.get("bypass_permissions") or route.get("dangerously_skip_permissions")):
         raise ACPError("ACP bypass permission mode is refused")
     restrictions = {
         "hooks": False,
@@ -213,6 +226,24 @@ class BudgetCapabilities:
     per_call: bool = False
     step_count: bool = False
     token_reporting: bool = False
+
+
+# What each known adapter can enforce. The matrix is a property of the adapter,
+# so it is looked up by the agent command, never read from the task document.
+ADAPTER_CAPABILITIES: dict[str, BudgetCapabilities] = {
+    "coddy": BudgetCapabilities(token_reporting=True),   # session/update token_usage
+    "claude-agent-acp": BudgetCapabilities(),
+    "codex-acp": BudgetCapabilities(),
+    "opencode": BudgetCapabilities(),
+    "agent": BudgetCapabilities(),                       # Cursor
+}
+
+
+def adapter_capabilities(agent_command: Sequence[str]) -> BudgetCapabilities:
+    """Return the enforceable-budget matrix for the adapter named by a command."""
+    if not agent_command or not isinstance(agent_command[0], str):
+        raise ACPError("ACP agent command must name an executable")
+    return ADAPTER_CAPABILITIES.get(Path(agent_command[0]).name, BudgetCapabilities())
 
 
 def _weaker_opt_in(task: Mapping[str, Any]) -> bool:
@@ -267,17 +298,26 @@ class TokenAccounting:
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     raise ACPError(f"ACP usage {name} must be a nonnegative integer")
                 numbers[name] = value
+        inputs = numbers.get("input_tokens", numbers.get("prompt_tokens"))
+        outputs = numbers.get("output_tokens", numbers.get("completion_tokens"))
         total = numbers.get("total_tokens")
-        if total is None and ("input_tokens" in numbers or "output_tokens" in numbers):
-            total = numbers.get("input_tokens", numbers.get("prompt_tokens", 0)) + \
-                    numbers.get("output_tokens", numbers.get("completion_tokens", 0))
-        if total is not None and total < self.total_tokens:
+        if total is None and (inputs is not None or outputs is not None):
+            total = (inputs or 0) + (outputs or 0)
+        if total is None:
+            # A report without any count carries no information; it is not a zero.
+            return self.total_tokens
+        if total < self.total_tokens:
             self.inconsistent = True
-        self.input_tokens = max(self.input_tokens, numbers.get("input_tokens", numbers.get("prompt_tokens", 0)))
-        self.output_tokens = max(self.output_tokens, numbers.get("output_tokens", numbers.get("completion_tokens", 0)))
-        self.total_tokens = max(self.total_tokens, total or 0)
+        self.input_tokens = max(self.input_tokens, inputs or 0)
+        self.output_tokens = max(self.output_tokens, outputs or 0)
+        self.total_tokens = max(self.total_tokens, total)
         self.reports += 1
         return self.total_tokens
+
+    @property
+    def known(self) -> bool:
+        """False until at least one report carried a count; zero is never assumed."""
+        return self.reports > 0
 
     @property
     def cumulative_total(self) -> int:
@@ -285,8 +325,9 @@ class TokenAccounting:
 
     def as_dict(self) -> dict[str, Any]:
         return {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
-                "total_tokens": self.total_tokens, "reports": self.reports,
-                "inconsistent": self.inconsistent, "accounting": "latest_cumulative_max"}
+                "total_tokens": self.total_tokens if self.known else None, "reports": self.reports,
+                "known": self.known, "inconsistent": self.inconsistent,
+                "accounting": "latest_cumulative_max"}
 
 
 class WorkspaceCallback:
@@ -450,7 +491,8 @@ class CancellationSupervisor:
             if exists:
                 self._send(signal.SIGTERM)
             self.term_sent_at = current
-        elif self.term_sent_at is not None and self.kill_sent_at is None and \
+        # Not an elif: a caller that polls late must still escalate in the same call.
+        if self.term_sent_at is not None and self.kill_sent_at is None and \
                 current - self.term_sent_at >= self.grace_seconds:
             if exists:
                 self._send(signal.SIGKILL)
@@ -487,13 +529,20 @@ class LaunchPlan:
 def prepare_launch(task: Mapping[str, Any], agent_command: Sequence[str],
                    advertisement: Mapping[str, Any],
                    capability: str | None = None,
-                   base_environment: Mapping[str, str] | None = None) -> LaunchPlan:
-    planner = IsolationPlanner(capability)
+                   base_environment: Mapping[str, str] | None = None,
+                   capabilities: BudgetCapabilities | None = None,
+                   store_home: str | Path | None = None) -> LaunchPlan:
+    if "budget_capabilities" in task:
+        raise ACPError("budget capabilities are a property of the adapter, not of the task")
+    planner = IsolationPlanner(capability, store_home=store_home)
     isolation = planner.evaluate(task)
     state_path = task.get("state_path", task.get("agent_state_dir"))
-    security = secure_agent(task, state_path) if isinstance(state_path, str) else \
-        (_raise("Tier A requires state_path") if isolation.tier == "A" else secure_agent(task, "/tmp/acp-state"))
-    budget = evaluate_budgets(task, BudgetCapabilities(**task.get("budget_capabilities", {})))
+    if not isinstance(state_path, str) or not state_path:
+        # Every tier needs a private agent home; a shared /tmp default would let
+        # two attempts read each other's state.
+        raise ACPError("ACP launch requires a private state_path")
+    security = secure_agent(task, state_path)
+    budget = evaluate_budgets(task, capabilities if capabilities is not None else adapter_capabilities(agent_command))
     if not budget.allowed:
         raise ACPError(budget.reason)
     negotiated = negotiate(advertisement, task.get("mode"), task.get("model"))
@@ -501,6 +550,3 @@ def prepare_launch(task: Mapping[str, Any], agent_command: Sequence[str],
     return LaunchPlan(isolation, security, budget, negotiated, command,
                       secure_environment(base_environment, security))
 
-
-def _raise(message: str):
-    raise ACPError(message)

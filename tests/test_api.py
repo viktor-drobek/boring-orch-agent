@@ -89,7 +89,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(task["status"], "Cancelled")
 
     def test_native_lifecycle_registration_is_observable_without_launching(self):
-        spec = {"id": "native-root", "objective": "prepare context",
+        spec = {"id": "native-root", "objective": "prepare context", "workspace": str(Path(self.temp.name)),
                 "runtime": "coddy_native", "model": "codex/gpt-5.6-luna"}
         status, job = self.request("POST", "/api/v1/native/jobs", spec)
         self.assertEqual(status, 202)
@@ -131,6 +131,15 @@ class ApiTests(unittest.TestCase):
         status, children = self.request("GET", f"/api/v1/workflows/{receipt['workflow_id']}/children")
         self.assertEqual(status, 200)
         self.assertEqual(len(children["children"]), 1)
+
+    def test_unlisted_discovery_escape_is_not_accepted_over_http(self):
+        route = {"id": "api-unlisted", "executable": sys.executable, "args": ["--version"]}
+        status, body = self.request("POST", "/api/v1/discovery/handshake", {"route": route, "allow_unlisted": True})
+        self.assertEqual(status, 400)
+        self.assertIn("operator-only", body["message"])
+        status, body = self.request("POST", "/api/v1/discovery/handshake", {"route": route})
+        self.assertEqual(status, 409)  # approval required, nothing ran
+        self.assertEqual(self.store.discovery_evidence(), [])
 
     def test_discovery_inventory_and_approval_routes_are_durable(self):
         status, inventory = self.request("GET", "/api/v1/discovery/inventory")

@@ -4,6 +4,8 @@ This guide starts a complete offline installation, then shows how to replace the
 
 ## 1. Install and choose a workspace
 
+Linux is required. The manager and worker read process identity from `/proc` and take `flock` locks; on another platform every long-running subcommand exits with "runs on Linux only" before touching the store.
+
 ```bash
 git clone https://github.com/viktor-drobek/boring-orch-agent.git
 cd boring-orch-agent

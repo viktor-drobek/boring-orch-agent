@@ -22,6 +22,27 @@ missing; they were uncommitted at that moment and are part of 0.1.3.
 this attempt wrote it or that its contents are right. Pair it with an `output_schema` that
 carries what the job produced, or with a following read-only review job.
 
+## Status after 0.1.5
+
+0.1.4 shipped most of this plan's *documents* and part of its *code* in one step, with an
+acceptance layer that reported 146 passing scenarios while binding most of their steps to a
+no-op. 0.1.5 corrects that (see `CHANGELOG.md` and `release-0.1.4-review.md`). What is
+real on `release/0.1.5`:
+
+| Area | Delivered | Not yet, and no longer claimed |
+|---|---|---|
+| Contracts (`docs/`) | isolation, cancellation, budgets, discovery, workflows, exec, each corrected to describe the code | — |
+| Milestone 0 (configuration) | — | config file, revision propagation to runners, logging, `anthropic-version` in config |
+| Milestone H (hardening) | tombstones, deadline-vs-success, validation outside the write lock, versioned migrations, Linux-only guard, `merged_sequence` no longer written, retention that skips planner tasks | durable relaunch backoff, listing paging, `merged_sequence` column removal |
+| Milestone 1 (context admission) | — | everything; `Completion` still reports one summed token count |
+| Milestone 2 (workflows) | root record, planner task, schema-validated plans, narrowing-only authority, producer-declared delivery, cumulative budgets, replan carrying only `Succeeded` children, HTTP API | `NeedsPlanning` from admission (depends on Milestone 1), `oversized_after_execution`, `boa workflow` CLI |
+| Milestone 3 (discovery) | passive inventory at `init` (no hashing, no processes), approved handshake and generative probes in real process groups with kill, fingerprint-bound approvals, credential references, HTTP API without the unlisted escape | `boa discover` CLI, handshake tier over ACP `initialize`, approval of the *resolved* route after environment overrides as its own object |
+| Milestone 4 (ACP runtime) | launch-plan policy objects (`acp.py`): tier decision, correct bubblewrap argv, adapter capability registry, cumulative usage, two-source cancellation rule | the runtime itself: nothing spawns the plan, no JSON-RPC transport, `worker --runtime acp` does not exist |
+| Native lifecycle (`session_lifecycle.py`) | durable job/session/run/transfer records, `ask` by default, workspace required outside the store, HTTP API | a caller for its execution half (`warm_session`, `start_job`, `recover` on startup) |
+
+Next in order: Milestone 0, then durable backoff and paging (H), then Milestone 1, then the
+ACP transport and runtime under Milestone 4's contracts.
+
 ## Contracts to write before code
 
 Each is a short document in `docs/`, merged before the milestone that depends on it. They

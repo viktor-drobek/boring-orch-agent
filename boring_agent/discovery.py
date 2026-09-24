@@ -59,11 +59,15 @@ def _credential_name(key: str) -> bool:
     return bool(_SECRET_KEY.search(key)) and not key.lower().endswith(("_ref", "_refs", "-ref", "reference"))
 
 
+def _is_reference(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(("env:", "ref:")) and len(value) > 4
+
+
 def _reject_credential_values(value: Any, path: str = "route") -> None:
     """Reject credentials supplied as data; references are the only accepted form."""
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if isinstance(key, str) and _credential_name(key):
+            if isinstance(key, str) and _credential_name(key) and not _is_reference(item):
                 raise Invalid(f"{path}.{key} must be a credential reference, not a value")
             _reject_credential_values(item, f"{path}.{key}")
     elif isinstance(value, list):
@@ -120,7 +124,9 @@ def _safe_metadata(route: Mapping[str, Any], limit: int) -> dict:
     return metadata
 
 
-def _file_identity(path: str | None) -> dict | None:
+def _file_identity(path: str | None, checksum: bool = True) -> dict | None:
+    """Identity of an executable. The content hash is only computed when an approval
+    or probe needs it: hashing every agent binary at `init` made store creation slow."""
     if not path:
         return None
     target = Path(path)
@@ -128,13 +134,16 @@ def _file_identity(path: str | None) -> dict | None:
         stat = target.stat()
         if not target.is_file():
             return None
-        checksum = hashlib.sha256()
-        with target.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                checksum.update(chunk)
-        return {"path": str(target), "realpath": str(target.resolve()), "device": stat.st_dev,
-                "inode": stat.st_ino, "mode": stat.st_mode, "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns, "sha256": checksum.hexdigest()}
+        identity = {"path": str(target), "realpath": str(target.resolve()), "device": stat.st_dev,
+                    "inode": stat.st_ino, "mode": stat.st_mode, "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns}
+        if checksum:
+            digest_ = hashlib.sha256()
+            with target.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest_.update(chunk)
+            identity["sha256"] = digest_.hexdigest()
+        return identity
     except (OSError, ValueError):
         return None
 
@@ -184,7 +193,7 @@ def _validate_route(route: Mapping[str, Any]) -> dict:
     return normalized
 
 
-def _resolve(route: Mapping[str, Any], environ: Mapping[str, str] | None = None) -> dict:
+def _resolve(route: Mapping[str, Any], environ: Mapping[str, str] | None = None, checksum: bool = True) -> dict:
     route = _validate_route(route)
     source_env = dict(os.environ if environ is None else environ)
     overrides = dict(route.get("env", {}))
@@ -192,12 +201,11 @@ def _resolve(route: Mapping[str, Any], environ: Mapping[str, str] | None = None)
     process_env = dict(source_env)
     for key, value in overrides.items():
         if _credential_name(key):
-            if value not in route.get("credential_refs", {}).values() and not value.startswith("ref:"):
+            if value not in route.get("credential_refs", {}).values() and not value.startswith(("ref:", "env:")):
                 raise Invalid(f"environment override {key} must use a credential reference")
             # A reference is not a secret. Resolve the actual credential only from
             # the operator environment when a probe is explicitly approved.
-            ref_name = value.removeprefix("ref:")
-            process_env[key] = source_env.get(ref_name, "")
+            process_env[key] = source_env.get(_reference_name(value), "")
         else:
             process_env[key] = os.path.expandvars(value) if value.startswith("$") else value
     executable = route["executable"]
@@ -205,7 +213,7 @@ def _resolve(route: Mapping[str, Any], environ: Mapping[str, str] | None = None)
         executable = process_env.get(executable[1:], "")
     resolved = shutil.which(executable, path=process_env.get("PATH")) if not os.path.isabs(executable) else executable
     resolved = str(Path(resolved).resolve()) if resolved else None
-    identity = _file_identity(resolved)
+    identity = _file_identity(resolved, checksum=checksum)
     override_fingerprints = {
         key: digest({"value": process_env.get(key, ""), "source": overrides[key] if not _credential_name(key) else "credential-reference"})
         for key in sorted(overrides)
@@ -221,6 +229,11 @@ def _resolve(route: Mapping[str, Any], environ: Mapping[str, str] | None = None)
             "fingerprint": digest(fingerprint_payload)}
 
 
+def _reference_name(reference: str) -> str:
+    """`env:NAME` and `ref:NAME` both name an environment variable; a bare name is itself."""
+    return reference.split(":", 1)[1] if reference.startswith(("env:", "ref:")) else reference
+
+
 def passive_inventory(routes: list[Mapping[str, Any]] | None = None,
                       environ: Mapping[str, str] | None = None) -> list[dict]:
     """Inspect executable availability without starting a process or making a request."""
@@ -229,7 +242,7 @@ def passive_inventory(routes: list[Mapping[str, Any]] | None = None,
     result = []
     for raw in values:
         route = _validate_route(raw)
-        resolved = _resolve(route, env)
+        resolved = _resolve(route, env, checksum=False)
         result.append({"route": route["id"], "available": resolved["identity"] is not None,
                        "executable": resolved["executable"], "executable_identity": resolved["identity"],
                        "metadata": _safe_metadata(route, 4096),
@@ -342,6 +355,9 @@ class Discovery:
             raise Invalid("probe tier must be handshake or generative")
         resolved = _resolve(route)
         if allow_unlisted:
+            # An operator-only escape for local Python or CLI callers. It is audited
+            # every time, never persisted as an approval, and never accepted from the
+            # HTTP API, whose request body cannot carry operator consent.
             self._record_audit(resolved["route_key"], "unlisted_invocation", "approved",
                                {"tier": tier, "fingerprint": resolved["fingerprint"]})
             return _Authorization(resolved, tier, None, True)
@@ -387,7 +403,8 @@ class Discovery:
                   max_output_bytes: int | None = None, allow_unlisted: bool = False) -> dict:
         auth = self._authorize(route, "handshake", approval_id, allow_unlisted)
         limit = max_output_bytes or self.max_output_bytes
-        if not isinstance(timeout or 10, (int, float)) or not .01 <= (timeout or 10) <= 3600:
+        timeout = 10.0 if timeout is None else timeout
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not .01 <= timeout <= 3600:
             raise Invalid("handshake timeout must be between .01 and 3600 seconds")
         if not 64 <= limit <= 10 * 1024 * 1024:
             raise Invalid("handshake max_output_bytes is out of bounds")
@@ -402,7 +419,7 @@ class Discovery:
         for child in (state / "config", state / "cache", state / "data"):
             child.mkdir()
         command = [auth.resolved["executable"], *auth.resolved["route"]["args"]]
-        return self._run_handshake(auth, command, env, state, timeout or 10, limit)
+        return self._run_handshake(auth, command, env, state, timeout, limit)
 
     probe_handshake = handshake
 
@@ -424,7 +441,15 @@ class Discovery:
             except subprocess.TimeoutExpired:
                 timed_out = True
                 terminated = _terminate_group(process.pid)
-                code = process.wait(timeout=2)
+                try:
+                    code = process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    # SIGTERM was ignored; the group is killed before its state is removed.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    code = process.wait(timeout=2)
             else:
                 # A successful parent can leave a descendant holding a pipe.  The
                 # group is still explicitly torn down before evidence is stored.
@@ -465,7 +490,8 @@ class Discovery:
                 route_value = auth.resolved["route"]
                 kind = route_value.get("provider") or auth.resolved["env"].get("BOA_PROVIDER", "openai")
                 base_url = route_value.get("base_url", route_value.get("url")) or auth.resolved["env"].get("BOA_BASE_URL", "")
-                api_key = auth.resolved["env"].get("BOA_API_KEY", "")
+                reference = route_value.get("credential_ref") or "env:BOA_API_KEY"
+                api_key = auth.resolved["env"].get(_reference_name(reference), "")
                 requester = Provider(kind, base_url, model, api_key=api_key).complete
             completion = requester([{"role": "user", "content": prompt}], model, output_tokens, timeout)
             text = getattr(completion, "text", completion)

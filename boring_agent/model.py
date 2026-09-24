@@ -117,6 +117,9 @@ def validate_native_job(raw: dict) -> dict:
         number(normalized_budget["max_steps"], "max_steps", 1, 100, True)
     if normalized_budget["max_tokens"] is not None:
         number(normalized_budget["max_tokens"], "max_tokens", 1, 1_000_000_000, True)
+    workspace = raw.get("workspace")
+    if not isinstance(workspace, str) or not workspace.strip():
+        raise Invalid("native job workspace is required")
     normalized = {"id": job_id, "objective": objective, "runtime": runtime, "model": model,
                   "session": "@session:" + mentioned_session if mentioned_session else None,
                   "dependencies": sorted(set(dependencies)), "budget": normalized_budget,

@@ -19,7 +19,7 @@ Job descriptions come from a person or a trusted integration that submits a comp
 
 ## Job launch through exec
 
-New operational jobs use native Coddy execution. Read the mandatory [exec launch and handoff contract](boring_agent/memory/.agents/references/exec.md). The parent reads the configured selector from the job and uses `spawn_agent(model=job.model)`. Exec reads the complete job file itself, implements its objective with permitted native tools and verifies the result. Do not route execution through adapters, manager/worker services, intermediate submissions, nested Coddy processes or direct provider HTTP. Legacy runtime code and offline tests remain part of the package, not the operational launch route.
+New operational jobs use native Coddy execution. Read the mandatory [exec launch and handoff contract](docs/exec.md). The parent reads the configured selector from the job and uses `spawn_agent(model=job.model)`. Exec reads the complete job file itself, implements its objective with permitted native tools and verifies the result. Do not route execution through adapters, manager/worker services, intermediate submissions, nested Coddy processes or direct provider HTTP. Legacy runtime code and offline tests remain part of the package, not the operational launch route.
 
 Launch only READY jobs with satisfied dependencies, verified inputs and a free approved execution slot. Do not prelaunch exec agents to wait for receipts, results or capacity. After a verified outcome, reassess and launch the next ready independent job. Default to one executing job. A child that discovers missing prerequisites returns NOT_READY without waiting.
 

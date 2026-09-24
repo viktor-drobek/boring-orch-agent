@@ -8,7 +8,7 @@ Start with the complete [getting-started guide](docs/getting-started.md), then c
 
 ## For people
 
-Install Python 3.11+ and create an environment:
+The orchestrator runs on **Linux only**: process identity comes from `/proc` and singleton locks from `flock`, and `manager`, `worker`, `serve` and `demo` refuse to start elsewhere with a clear message. Install Python 3.11+ and create an environment:
 
 ```bash
 python -m venv .venv

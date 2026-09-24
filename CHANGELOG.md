@@ -1,10 +1,23 @@
 # Changelog
 
+## 0.1.5
+
+Correction release for 0.1.4, following the review in `release-0.1.4-review.md`.
+
+- **Acceptance suite is honest again.** The import-time generator that bound roughly 270 step lines to a no-op is removed, along with the three feature files it served (`acp_runtime`, `configuration`, `context_admission`) whose behavior does not exist. Three shared steps that had been weakened to return early are restored. `discovery`, `workflows` and `hardening` are rewritten with steps that call production code. A regression test now fails the build if a step is generated at import or bound to a catch-all.
+- **CI passes.** The two guidance tests read `docs/exec.md`, which is committed, instead of an untracked `memory/` path; every rule tree references that path.
+- **Security.** Native lifecycle sessions default to permission mode `ask`, refuse any bypass mode, and require an existing absolute workspace outside the store home. The `allow_unlisted` discovery escape is refused over HTTP; it remains an audited, operator-only Python parameter.
+- **Correctness.** Retention no longer wedges on a workflow planner task (foreign key). Replanning carries only `Succeeded` children and gives a kept pending child a fresh task instead of a cancelled one. A child inherits and may only lower root budgets; `null` cannot remove a token ceiling and deadlines cannot grow. `deliver` is read from the producing child, as documented. `create_workflow` on a key used by a plain submit returns `409` instead of crashing. Discovery understands `env:NAME` credential references, honors `credential_ref` for generative probes, kills a group that ignores `SIGTERM` before removing its state, and validates its timeout. ACP launch plans use a correct bubblewrap argument order (tmpfs root first, no orphaned `--ro-bind`), require a private state path, refuse the store home, take the budget matrix from an adapter registry instead of the task, understand OpenAI-shaped usage, keep missing usage unknown, and escalate through both signals in one late poll. Lifecycle read routes no longer take the write lock.
+- **Hardening items delivered:** import-safe Linux-only guard for `manager`, `worker`, `serve` and `demo`; `merged_sequence` is no longer written; the Linux classifier and a platform note in the README and getting-started guide.
+- **Still not implemented, and no longer claimed:** an ACP worker runtime, context admission, the configuration file, durable relaunch backoff, and listing paging. `PLAN.md` records their status.
+
 ## 0.1.4
 
-- Add ACP runtime, discovery, context admission, workflow orchestration, session lifecycle, native exec and parent-watchdog contracts with acceptance and regression coverage.
-- Add durable retention and idempotency tombstones, deadline settlement precedence, and resumable schema migrations.
-- Add hardening, configuration, isolation, cancellation, budget, discovery, exec and workflow documentation and scenarios.
+- Add durable retention with idempotency tombstones, deadline settlement precedence, artifact validation outside the write transaction, and resumable schema migrations (`user_version` 2).
+- Add workflow planning metadata (`workflow_roots`, plans, children, deliveries) settled by the manager when a planner task succeeds, with an HTTP API.
+- Add consent-gated discovery (passive inventory at `init`, approved handshake and generative probes) with an HTTP API.
+- Add the native session lifecycle store and its HTTP API, ACP launch-policy objects, a parent idle watchdog, and the contract documents for isolation, cancellation, budgets, discovery, exec and workflows.
+- Note: this entry was rewritten in 0.1.5. The original claimed acceptance coverage for ACP execution, context admission and configuration that did not exist; see `release-0.1.4-review.md`.
 
 ## 0.1.3
 

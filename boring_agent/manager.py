@@ -90,7 +90,6 @@ class Manager:
                         validations.append((dict(task), dict(attempt), spec))
                     else:
                         self.settle(db, task, attempt, spec, now)
-                db.execute("UPDATE attempts SET merged_sequence=sequence WHERE id=?", (attempt["id"],))
             self.schedule(db, cfg, now)
         for task, attempt, spec in validations:
             self._validate_and_settle(task, attempt, spec)

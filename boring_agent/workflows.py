@@ -244,19 +244,32 @@ class WorkflowStore:
             raise Invalid(f"child {child['id']} requests tools outside the root authority")
         if root_spec["model"] is not None and raw.get("model", root_spec["model"]) != root_spec["model"]:
             raise Invalid(f"child {child['id']} requests a model outside the root policy")
-        retry = raw.get("retry", root_spec["retry"])
+        child_task = child["task"]
+        for key in ("retry", "budget"):
+            if key in child_task and not isinstance(child_task[key], dict):
+                raise Invalid(f"child {child['id']} {key} must be an object")
+        # A child inherits every retry and budget field it does not set. It may
+        # tighten a field, never loosen it, and it cannot drop a ceiling by
+        # writing null where the root has a number.
+        retry = {**root_spec["retry"], **child_task.get("retry", {})}
         if retry.get("max_attempts", 1) > root_spec["retry"]["max_attempts"] or \
                 (retry.get("replay_safe", False) and not root_spec["retry"]["replay_safe"]):
             raise Invalid(f"child {child['id']} broadens retry authority")
-        budget = raw.get("budget", root_spec["budget"])
+        root_budget = root_spec["budget"]
+        budget = {**root_budget, **child_task.get("budget", {})}
+        if root_budget["max_tokens"] is not None and budget.get("max_tokens") is None:
+            raise Invalid(f"child {child['id']} cannot remove the root token ceiling")
+        for key in ("deadline_seconds", "attempt_seconds", "max_steps", "max_output_bytes",
+                    "request_seconds", "output_tokens", "max_tokens"):
+            if budget.get(key) is not None and root_budget.get(key) is not None and budget[key] > root_budget[key]:
+                raise Invalid(f"child {child['id']} broadens budget {key} beyond the root")
         requested_tokens = budget.get("max_tokens")
         if remaining_tokens is not None and requested_tokens is not None and requested_tokens > remaining_tokens:
             raise Invalid(f"child {child['id']} exceeds the remaining workflow token budget")
         if remaining_attempts < 1:
             raise Invalid("workflow attempt budget is exhausted")
-        if root_spec["budget"]["max_tokens"] is not None and requested_tokens is not None and \
-                requested_tokens > root_spec["budget"]["max_tokens"]:
-            raise Invalid(f"child {child['id']} exceeds the root token budget")
+        raw["retry"] = retry
+        raw["budget"] = budget
         raw["tools"] = child_tools
         raw["sandbox"] = raw.get("sandbox", root_spec["sandbox"])
         raw["workspace"] = root_spec["workspace"]
@@ -303,9 +316,12 @@ class WorkflowStore:
             if existing is not None:
                 if existing["payload_hash"] != command_spec_hash:
                     raise Conflict("Idempotency key was already used with different content")
+                root_row = db.execute("SELECT id FROM workflow_roots WHERE planner_task_id=?",
+                                      (existing["task_id"],)).fetchone()
+                if root_row is None:
+                    raise Conflict("Idempotency key was already used by a plain task submission, not a workflow")
                 return {"command_id": existing["id"], "task_id": existing["task_id"],
-                        "workflow_id": db.execute("SELECT id FROM workflow_roots WHERE planner_task_id=?",
-                                                   (existing["task_id"],)).fetchone()[0], "duplicate": True}
+                        "workflow_id": root_row["id"], "duplicate": True}
             self._insert_task_locked(db, planner_spec, planner_id)
             db.execute("INSERT INTO commands(id,idempotency_key,kind,task_id,payload_hash,accepted_at) VALUES(?,?,?,?,?,?)",
                        (command_id, key, "submit", planner_id, command_spec_hash, now))
@@ -355,7 +371,7 @@ class WorkflowStore:
             children = self._validate_plan_shape(plan, root["max_children"])
             remaining_tokens = None if root["max_tokens"] is None else root["max_tokens"] - root["tokens_used"]
             remaining_attempts = root["max_attempts"] - root["attempts_used"]
-            if remaining_tokens is not None and remaining_tokens < 0:
+            if remaining_tokens is not None and remaining_tokens <= 0:
                 raise Invalid("workflow token budget is exhausted")
             prepared = []
             for child in children:
@@ -387,11 +403,16 @@ class WorkflowStore:
         inserted = []
         for index, (child, spec) in enumerate(prepared):
             carried = self._source_child_locked(db, workflow_id, child["id"], root["plan_revision"])
+            # Only verified, completed work is carried over. A child that was
+            # pending, running or cancelled (including one cancelled just above as
+            # obsolete) gets a fresh task under the new revision.
+            if carried is not None:
+                status_row = db.execute("SELECT status FROM tasks WHERE id=?", (carried["task_id"],)).fetchone()
+                if status_row is None or status_row[0] != "Succeeded":
+                    carried = None
             if carried is not None:
                 task_id = carried["task_id"]
-                carried_output = carried["carried_output"]
-                if carried["task_id"] and db.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()[0] == "Succeeded":
-                    carried_output = carried_output or self._task_result_json(db, task_id)
+                carried_output = carried["carried_output"] or self._task_result_json(db, task_id)
                 internal = f"workflow:{workflow_id}:revision:{revision}:child:{index}"
                 db.execute("""INSERT INTO workflow_children(
                     internal_id,workflow_id,revision,child_index,child_key,task_id,dependencies,delivery,
@@ -472,7 +493,6 @@ class WorkflowStore:
             return {"state": "not_workflow"}
         root = self._root_locked(db, row["workflow_id"])
         dependencies = json.loads(row["dependencies"])
-        declaration = json.loads(row["delivery"])
         if not dependencies:
             return {"state": "ready", "bytes": 0, "deliveries": []}
         delivered, total = [], 0
@@ -485,6 +505,8 @@ class WorkflowStore:
                 return {"state": "waiting", "bytes": 0, "deliveries": []}
             if source_status != "Succeeded":
                 return self._dependency_failed_locked(db, root, row, f"dependency {key} did not succeed", source["task_id"])
+            # The producer declares what it delivers; the consumer only names its sources.
+            declaration = json.loads(source["delivery"])
             try:
                 payload = self._payload_for_source_locked(db, row["workflow_id"], source, row, declaration)
             except Invalid as exc:

@@ -1,10 +1,11 @@
 # ACP budget contract
 
-ACP adapters expose a capability matrix before launch. The manager refuses a
-requested hard budget when the adapter cannot enforce it, unless the task
-explicitly opts into the weaker contract (`weaker_contract_opt_in`,
-`allow_weaker_contract` or `budget_contract: weaker`). The refusal names every
-unenforceable budget.
+Each ACP adapter has a capability matrix (`boring_agent.acp.ADAPTER_CAPABILITIES`,
+keyed by the agent executable). It is a property of the adapter: a task document
+that tries to declare its own matrix is refused. A requested hard budget the
+adapter cannot enforce is refused, unless the task explicitly opts into the weaker
+contract (`weaker_contract_opt_in`, `allow_weaker_contract` or
+`budget_contract: weaker`). The refusal names every unenforceable budget.
 
 | Budget | Required capability | Contract when supported |
 | --- | --- | --- |
@@ -14,11 +15,14 @@ unenforceable budget.
 | internal step count | agent/protocol step visibility | opaque ACP turns cannot enforce it |
 | token total | cumulative usage reporting | approximate accounting; not a hard local limit |
 
-Token totals reported after opaque turns are cumulative. The runtime stores the
-latest cumulative maximum and never sums the same prefix twice. Input and output
-counts are retained separately when available. A missing report is unknown, not
-zero; a decreasing cumulative report is marked inconsistent and cannot refund a
-budget.
+Token totals reported after opaque turns are cumulative. The accounting stores the
+latest cumulative maximum and never sums the same prefix twice. Both the ACP names
+(`input_tokens`, `output_tokens`, `total_tokens`) and the OpenAI names
+(`prompt_tokens`, `completion_tokens`) are understood. A report without counts is
+unknown, not zero: `total_tokens` stays `null` and `known` stays false until a real
+count arrives. A decreasing cumulative report is marked inconsistent and cannot
+refund a budget. The legacy HTTP provider path (`providers.py`) still reports one
+summed token count; separate input and output counts there are future work.
 
 A weaker opt-in changes the claim, not the observed data: unenforceable fields
 remain listed in the launch record and the result must not describe them as
