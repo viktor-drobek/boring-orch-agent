@@ -32,8 +32,8 @@ All bodies and replies are JSON. Bodies may be at most 256,000 bytes. Unknown pa
 | `POST` | `/api/v1/workflows` | Create a workflow root and its read-only planner task. Requires `Idempotency-Key`; returns `202`. |
 | `GET` | `/api/v1/workflows/{workflow_id}` | One workflow root. |
 | `GET` | `/api/v1/workflows/{workflow_id}/children` | Child records across plan revisions. |
-| `POST` | `/api/v1/workflows/{workflow_id}/plan` | Validate and settle a plan; an invalid plan is recorded as rejected and creates no children. |
-| `POST` | `/api/v1/workflows/{workflow_id}/replan` | Accept a new plan revision; obsolete pending children are cancelled first. |
+| `POST` | `/api/v1/workflows/{workflow_id}/plan` | Validate and settle the workflow's first plan. Requires `Idempotency-Key`; returns `202` and a receipt whose `state` is `accepted` or `rejected` (an invalid plan creates no children). `409` once a plan is already accepted. |
+| `POST` | `/api/v1/workflows/{workflow_id}/replan` | Accept a new plan revision. Requires `Idempotency-Key`; returns `202`. Unstarted obsolete children are cancelled first; launched ones get a cancel request. A rejected replan leaves the executing revision unchanged. |
 | `GET` | `/api/v1/discovery/inventory` | Passive inventory recorded at `init`. |
 | `GET` | `/api/v1/discovery/approvals` | Approval records with route fingerprints. |
 | `GET` | `/api/v1/discovery/evidence` | Sanitized probe evidence. |

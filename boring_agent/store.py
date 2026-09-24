@@ -563,17 +563,17 @@ class Store:
         from .workflows import WorkflowStore
         return WorkflowStore(self).children(workflow_id, revision)
 
-    def settle_workflow_plan(self, workflow_id, plan, *, replan=False):
+    def settle_workflow_plan(self, workflow_id, plan, *, replan=False, key=None):
         from .workflows import WorkflowStore
-        return WorkflowStore(self).settle_plan(workflow_id, plan, replan=replan)
+        return WorkflowStore(self).settle_plan(workflow_id, plan, replan=replan, key=key)
 
     def deliver_workflow_dependencies(self, task_id):
         from .workflows import WorkflowStore
         return WorkflowStore(self).deliver_dependencies(task_id)
 
-    def replan_workflow(self, workflow_id, plan):
+    def replan_workflow(self, workflow_id, plan, key=None):
         from .workflows import WorkflowStore
-        return WorkflowStore(self).replan(workflow_id, plan)
+        return WorkflowStore(self).replan(workflow_id, plan, key=key)
 
     # Discovery is an independent, consent-aware boundary.  These delegates keep
     # callers from importing an implementation detail while preserving the same
