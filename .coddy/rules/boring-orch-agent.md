@@ -3,7 +3,7 @@
 Coddy discovers root `AGENTS.md`, the canonical brief shared by the agent rule trees.
 Before changing this project, read it, `docs/architecture.md`, and relevant tests.
 
-Before an operational job, read `boring_agent/memory/.agents/references/exec.md`
+Before an operational job, read `docs/exec.md`
 (relative to repository root). The parent validates READY status, dependencies, slot
 and job.model, then calls `spawn_agent(model=job.model)`. Exec reads the whole job
 and executes it itself with permitted native Coddy tools. Do not use execution

@@ -484,6 +484,20 @@ class StoreCase(unittest.TestCase):
         db.execute("PRAGMA user_version=1")
         db.close()
 
+    def test_retention_skips_workflow_planner_tasks_instead_of_wedging(self):
+        receipt = self.store.create_workflow({"objective": "plan", "runtime": "demo",
+                                              "demo": {"delay_seconds": 0, "result": {"children": [{"id": "a"}]}},
+                                              "workflow": {"enabled": True}}, "planner-retention")
+        self.assertEqual(self.execute_attempt(receipt["task_id"])["status"], "Succeeded")
+        with self.store.transaction() as db:
+            db.execute("UPDATE tasks SET finished_at=0 WHERE id=?", (receipt["task_id"],))
+            db.execute("UPDATE settings SET value='1' WHERE key='retention_seconds'")
+        for _ in range(2):  # a second pass must not raise a foreign-key conflict either
+            result = self.store.retain(now=time.time())
+            self.assertNotIn(receipt["task_id"], result["deleted"])
+        self.assertEqual(self.store.task(receipt["task_id"])["status"], "Succeeded")
+        self.assertEqual(self.store.workflow(receipt["workflow_id"])["planner_task_id"], receipt["task_id"])
+
     def test_retention_keeps_submit_tombstone_after_task_deletion(self):
         raw = {"objective": "Test a durable task", "runtime": "demo", "demo": {"delay_seconds": 0}}
         receipt = self.store.submit(raw, "retention-unit")["task_id"]

@@ -161,16 +161,19 @@ def handler_type(store: Store, auth_token: str):
                         route, payload.get("tier", "handshake"), cost_policy=payload.get("cost_policy")))
                 if parts == ["api", "v1", "discovery", "handshake"]:
                     payload = _body(self)
+                    if "allow_unlisted" in payload:
+                        raise Invalid("allow_unlisted is an operator-only escape and is not accepted over HTTP")
                     return self._reply(202, Discovery(store).handshake(
                         payload.get("route"), payload.get("approval_id"),
-                        timeout=payload.get("timeout"), max_output_bytes=payload.get("max_output_bytes"),
-                        allow_unlisted=payload.get("allow_unlisted", False)))
+                        timeout=payload.get("timeout"), max_output_bytes=payload.get("max_output_bytes")))
                 if parts == ["api", "v1", "discovery", "generative"]:
                     payload = _body(self)
+                    if "allow_unlisted" in payload:
+                        raise Invalid("allow_unlisted is an operator-only escape and is not accepted over HTTP")
                     return self._reply(202, Discovery(store).generative(
                         payload.get("route"), payload.get("prompt", "Return a bounded capability response."),
                         payload.get("approval_id"), output_tokens=payload.get("output_tokens", 128),
-                        timeout=payload.get("timeout", 30), allow_unlisted=payload.get("allow_unlisted", False)))
+                        timeout=payload.get("timeout", 30)))
                 if parts == ["api", "v1", "native", "workflows"]:
                     payload = _body(self)
                     jobs = payload.get("jobs")

@@ -8,7 +8,7 @@ Update examples and API documentation when a public task schema, API route, CLI 
 
 ## Operational jobs through exec
 
-Follow `AGENTS.md` and `boring_agent/memory/.agents/references/exec.md` (paths relative to repository root). The parent verifies readiness and the job selector, then calls `spawn_agent(model=job.model)`. Exec reads the whole approved job itself and performs it with permitted native Coddy tools. No execution adapters, manager/worker services, intermediate submissions, nested Coddy processes or direct provider HTTP. Legacy runtime tests remain allowed offline.
+Follow `AGENTS.md` and `docs/exec.md` (paths relative to repository root). The parent verifies readiness and the job selector, then calls `spawn_agent(model=job.model)`. Exec reads the whole approved job itself and performs it with permitted native Coddy tools. No execution adapters, manager/worker services, intermediate submissions, nested Coddy processes or direct provider HTTP. Legacy runtime tests remain allowed offline.
 
 Launch only READY jobs with satisfied dependencies and an available execution slot, never waiting supervisors. Reassess remaining independent jobs after each verified outcome. Supply absolute job/workspace paths, hash, native run ID, selected_model, permissions, budgets, acceptance criteria and result recipient. Use background execution with parent notification/supervision. Unknown needs an operator decision without automatic replay. The parent owns independent idle observation and escalation after >1800s; a hung child cannot monitor itself. `/model --count` is not a job-step budget and is not an executable child tool. Keep native run results separate from immutable legacy Store history.
 

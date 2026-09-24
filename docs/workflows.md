@@ -77,10 +77,14 @@ A child can only narrow the root authority:
 - a read-only root cannot produce a writable child;
 - child tools must be a subset of root tools;
 - a pinned root model cannot be replaced by another model;
-- retry safety and maximum attempts cannot be broadened; and
+- retry safety and maximum attempts cannot be broadened;
+- every budget field a child omits is inherited from the root, a child may only
+  lower a root value, and a child cannot write `null` where the root has a
+  ceiling; and
 - child token budgets cannot exceed the remaining workflow ceiling.
 
-Dependencies express delivery, not merely ordering. A successful source hands over
+Dependencies express delivery, not merely ordering. The **producing** child declares
+`deliver`; a consumer only names its dependencies. A successful source hands over
 only the declared validated result and named visible workspace files. Files are
 bounded to 1 MiB each and remain workspace-relative. The resulting canonical payload
 and byte count are durable in `workflow_deliveries` and `context_bytes` on the child.
@@ -97,9 +101,10 @@ an admission/scheduling value only; it is not a claim about output quality.
 
 `POST /api/v1/workflows/{id}/replan` or `Store.replan_workflow` validates and accepts
 a new revision. Obsolete queued children are cancelled before replacement insertion;
-running children are not silently killed. Succeeded children with the same child ID
-are carried into the new revision with their verified output and measured context,
-so completed work is not regenerated. New children use a fresh internal revision
+running children are not silently killed. Only `Succeeded` children with the same
+child ID are carried into the new revision with their verified output and measured
+context, so completed work is not regenerated; a child that was still pending gets a
+fresh task under the new revision even when the new plan keeps its ID. New children use a fresh internal revision
 identity while retaining the workflow's remaining authority and budget.
 
 Useful read routes are:

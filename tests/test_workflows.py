@@ -102,9 +102,8 @@ class WorkflowTests(unittest.TestCase):
         (self.workspace / "facts.txt").write_text("verified facts", encoding="utf-8")
         receipt = self.create()
         result = self.store.settle_workflow_plan(receipt["workflow_id"], self.plan(
-            {"id": "source"},
-            {"id": "consumer", "dependencies": ["source"],
-             "deliver": {"files": ["facts.txt"]}},
+            {"id": "source", "deliver": {"files": ["facts.txt"]}},
+            {"id": "consumer", "dependencies": ["source"]},
         ))
         self.assertEqual(result["state"], "accepted")
         children = self.store.workflow_children(receipt["workflow_id"])
@@ -119,7 +118,7 @@ class WorkflowTests(unittest.TestCase):
     def test_missing_declared_dependency_output_blocks_consumer(self):
         receipt = self.create()
         self.store.settle_workflow_plan(receipt["workflow_id"], self.plan(
-            {"id": "source"}, {"id": "consumer", "dependencies": ["source"], "deliver": {"result": True}}))
+            {"id": "source", "deliver": {"result": True}}, {"id": "consumer", "dependencies": ["source"]}))
         source, consumer = self.store.workflow_children(receipt["workflow_id"])
         with self.store.transaction() as db:
             db.execute("UPDATE tasks SET status='Succeeded' WHERE id=?", (source["task_id"],))
@@ -127,6 +126,43 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result["state"], "failed")
         self.assertEqual(self.store.task(consumer["task_id"])["status"], "Failed")
         self.assertTrue(self.store.workflow( receipt["workflow_id"])["reason"])
+
+    def test_child_cannot_drop_or_stretch_root_budget(self):
+        root = self.root(max_tokens=5000)
+        root["budget"] = {"max_tokens": 5000, "deadline_seconds": 60}
+        receipt = self.store.create_workflow(root, "ceiling")
+        for label, budget in (("null ceiling", {"max_tokens": None}), ("longer deadline", {"deadline_seconds": 3600}),
+                              ("more tokens", {"max_tokens": 6000})):
+            with self.subTest(label=label):
+                result = self.store.settle_workflow_plan(receipt["workflow_id"], self.plan(
+                    {"id": "child", "task": {"budget": budget}}))
+                self.assertEqual(result["state"], "rejected", result)
+        accepted = self.store.settle_workflow_plan(receipt["workflow_id"], self.plan(
+            {"id": "child", "task": {"budget": {"deadline_seconds": 30}}}))
+        self.assertEqual(accepted["state"], "accepted")
+        child = self.store.workflow_children(receipt["workflow_id"])[0]
+        spec = self.store.task(child["task_id"])["spec"]
+        self.assertEqual((spec["budget"]["max_tokens"], spec["budget"]["deadline_seconds"]), (5000, 30))
+
+    def test_replan_gives_a_kept_pending_child_a_fresh_task(self):
+        receipt = self.create(max_attempts=10)
+        self.store.settle_workflow_plan(receipt["workflow_id"], self.plan({"id": "done"}, {"id": "keep"}))
+        done, keep = self.store.workflow_children(receipt["workflow_id"])
+        with self.store.transaction() as db:
+            db.execute("UPDATE tasks SET status='Succeeded' WHERE id=?", (done["task_id"],))
+        result = self.store.replan_workflow(receipt["workflow_id"], self.plan({"id": "done"}, {"id": "keep"}))
+        self.assertEqual(result["state"], "accepted")
+        second = {c["child_key"]: c for c in self.store.workflow_children(receipt["workflow_id"], revision=2)}
+        self.assertEqual(second["done"]["task_id"], done["task_id"])
+        self.assertNotEqual(second["keep"]["task_id"], keep["task_id"])
+        self.assertEqual(self.store.task(second["keep"]["task_id"])["status"], "Pending")
+        self.assertEqual(self.store.task(keep["task_id"])["status"], "Cancelled")
+
+    def test_key_used_by_a_plain_submission_conflicts_instead_of_crashing(self):
+        raw = self.root()
+        self.store.submit(raw, "shared-key")
+        with self.assertRaises(Conflict):
+            self.store.create_workflow(raw, "shared-key")
 
     def test_replan_carries_success_and_cancels_obsolete_pending_child(self):
         receipt = self.create(max_attempts=10)

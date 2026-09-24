@@ -12,7 +12,7 @@ from .artifacts import read_result
 from .api import make_server
 from .manager import Manager
 from .model import AgentError, Invalid, TERMINAL, strict_json
-from .process import lock
+from .process import lock, supported
 from .providers import Provider
 from .store import Store
 from .worker import Worker
@@ -88,8 +88,17 @@ def loop(tick, poll, once=False):
             signal.signal(sig, handler)
 
 
+def require_platform(command):
+    reason = supported()
+    if reason is not None:
+        raise Invalid(f"boring-orch-agent runs on Linux only (needs /proc process identity and flock); "
+                      f"cannot start {command}: {reason}")
+
+
 def execute(args):
     store = Store(args.home)
+    if args.command in ("manager", "worker", "demo", "serve"):
+        require_platform(args.command)
     if args.command == "init":
         store.initialize(args.workspace, args.max_active, args.allow_workspace_write)
         emit({"home": str(store.home), "settings": store.settings()})

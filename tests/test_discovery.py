@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from boring_agent.discovery import Discovery, sanitize_evidence
+from boring_agent.discovery import Discovery, _resolve, sanitize_evidence
 from boring_agent.model import Conflict, Invalid
 from boring_agent.store import Store
 
@@ -111,6 +111,21 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(self.store.discovery_approvals(), [])
         audit = self.store.discovery_audit()
         self.assertTrue(any(item["action"] == "unlisted_invocation" for item in audit))
+
+    def test_env_and_ref_credential_references_resolve_to_the_named_variable(self):
+        environ = {"PATH": os.environ["PATH"], "FIXTURE_KEY": "resolved-value"}
+        for reference in ("env:FIXTURE_KEY", "ref:FIXTURE_KEY"):
+            route = self.executable_route(env_overrides={"BOA_API_KEY": reference})
+            resolved = _resolve(route, environ)
+            self.assertEqual(resolved["env"]["BOA_API_KEY"], "resolved-value", reference)
+            self.assertNotIn("resolved-value", json.dumps(resolved["override_fingerprints"]))
+
+    def test_handshake_timeout_accepts_none_and_rejects_booleans(self):
+        route = self.executable_route()
+        approval = self.discovery.approve(route)
+        self.assertEqual(self.discovery.handshake(route, approval["approval_id"], timeout=None)["status"], "completed")
+        with self.assertRaises(Invalid):
+            self.discovery.handshake(route, approval["approval_id"], timeout=True)
 
     def test_only_credential_references_are_accepted(self):
         with self.assertRaises(Invalid):

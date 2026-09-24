@@ -4,12 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boring-orch-agent"
-version = "0.1.4"
+version = "0.1.5"
 description = "A durable local manager-worker orchestrator for agent tasks"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+]
 dependencies = ["jsonschema>=4.19.2,<5", "referencing>=0.28.4"]
 
 [project.optional-dependencies]

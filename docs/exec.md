@@ -48,9 +48,11 @@ watchdog for itself.
 
 A new operational job needs an immutable source document and an authoritative
 native copy. Both must contain an explicit model selector and a runtime of
-`acp` or `coddy_native`; the queue entry starts as `Pending`, with
-`execution_authorized: false`, `native_attempt_count: 0`, and no timestamps.
-Creating a queue entry does not launch it. Launch only after the parent has
+`acp` or `coddy_native`, an explicit absolute `workspace` that is not the store
+home, and a permission mode that asks (`bypass` is refused). The registered
+`lifecycle_jobs` row starts in state `pending` (or `ready` when it has no
+dependencies) with `attempt_count: 0` and no active run. Creating the entry
+does not launch it. Launch only after the parent has
 verified readiness, dependencies, model selection, and a free native slot;
 then call the `exec` sub-agent with `model=job["model"]` and observe it with
 the watchdog above.

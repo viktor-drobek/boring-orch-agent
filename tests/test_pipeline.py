@@ -42,6 +42,28 @@ class AcceptanceGateTests(unittest.TestCase):
         self.assertGreater(sum(inventory(root).values()), 0)
 
 
+class StepDefinitionTests(unittest.TestCase):
+    """Every acceptance step must be an explicit definition that exercises production code."""
+
+    def test_steps_are_declared_explicitly_and_never_generated(self):
+        import ast
+        source = (Path(__file__).resolve().parent.parent / "features" / "steps" / "agent_steps.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        self.assertNotIn("step_registry", source, "steps must be registered through decorators only")
+        for node in tree.body:
+            # A module-level call registers nothing; import-time generation of steps is forbidden.
+            # (A module docstring is an Expr too and is allowed.)
+            if isinstance(node, ast.Expr) and not isinstance(node.value, ast.Constant):
+                self.fail(f"module-level statement at line {node.lineno} runs code at import")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                decorators = [d for d in node.decorator_list if isinstance(d, ast.Call)]
+                self.assertLessEqual(len(decorators), 4, f"{node.name} is bound to too many step texts")
+                body = [n for n in node.body if not isinstance(n, ast.Expr) or not isinstance(getattr(n, "value", None), ast.Constant)]
+                self.assertTrue(body, f"{node.name} has an empty body")
+                self.assertFalse(all(isinstance(n, ast.Pass) for n in body), f"{node.name} is a no-op step")
+
+
 class PipelineOrderTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

@@ -336,7 +336,8 @@ class Store:
             for task in db.execute("""SELECT id FROM tasks
                                   WHERE status IN ('Succeeded','Failed','Cancelled')
                                   AND finished_at IS NOT NULL AND finished_at<=?
-                                  AND NOT EXISTS (SELECT 1 FROM workflow_children w WHERE w.task_id=tasks.id)""", (cutoff,)):
+                                  AND NOT EXISTS (SELECT 1 FROM workflow_children w WHERE w.task_id=tasks.id)
+                                  AND NOT EXISTS (SELECT 1 FROM workflow_roots r WHERE r.planner_task_id=tasks.id)""", (cutoff,)):
                 if not db.execute("SELECT 1 FROM retention_intents WHERE task_id=?", (task["id"],)).fetchone():
                     paths = [r[0] for r in db.execute("SELECT result_path FROM attempts WHERE task_id=? AND result_path IS NOT NULL", (task["id"],))]
                     db.execute("INSERT INTO retention_intents VALUES(?,?,?,?,?)",

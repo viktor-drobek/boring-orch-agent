@@ -17,6 +17,7 @@ class SessionLifecycleTests(unittest.TestCase):
         root = Path(self.temp.name)
         workspace = root / "workspace"
         workspace.mkdir()
+        self.workspace = workspace
         self.store = Store(root / "state")
         self.store.initialize(workspace)
         self.lifecycle = SessionLifecycle(self.store)
@@ -24,16 +25,30 @@ class SessionLifecycleTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    @staticmethod
-    def job(job_id, objective="work", dependencies=None, **extra):
+    def job(self, job_id, objective="work", dependencies=None, **extra):
         return {
             "id": job_id,
             "objective": objective,
             "runtime": "coddy_native",
             "model": "codex/gpt-5.6-luna",
+            "workspace": str(self.workspace),
             "dependencies": dependencies or [],
             **extra,
         }
+
+    def test_native_sessions_never_bypass_permissions_or_run_in_the_store(self):
+        job = self.lifecycle.register_job(self.job("root"))
+        session = self.lifecycle.session(job["session_id"])
+        self.assertEqual(session["permission_mode"], "ask")
+        self.assertEqual(session["cwd"], str(self.workspace.resolve()))
+        with self.assertRaisesRegex(Invalid, "workspace is required"):
+            self.lifecycle.register_job({k: v for k, v in self.job("no-ws").items() if k != "workspace"})
+        with self.assertRaisesRegex(Invalid, "store home"):
+            self.lifecycle.register_job(self.job("in-store", workspace=str(self.store.home)))
+        with self.assertRaisesRegex(Invalid, "existing absolute directory"):
+            self.lifecycle.register_job(self.job("relative", workspace="relative/path"))
+        with self.assertRaisesRegex(Invalid, "bypass"):
+            self.lifecycle.create_session(model="m", cwd=str(self.workspace), permission_mode="bypassPermissions")
 
     def warm(self, session_id, calls=None):
         calls = calls if calls is not None else []

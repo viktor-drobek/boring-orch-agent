@@ -1,11 +1,29 @@
 """Linux process identity and advisory locks for this single-host deployment."""
 from contextlib import contextmanager
-import fcntl
 import hashlib
 import os
 from pathlib import Path
 
 from .model import Conflict
+
+try:  # fcntl does not exist on Windows; importing this module must still succeed there.
+    import fcntl
+except ImportError:  # pragma: no cover - exercised through supported() on other platforms
+    fcntl = None
+
+
+def supported() -> str | None:
+    """Return why this host cannot run managers or workers, or None when it can.
+
+    Process identity comes from /proc and the boot ID, and singleton locks from
+    flock. Without them a runner would fail its first claim with a confusing
+    "identity unavailable", so the loops refuse to start instead.
+    """
+    if fcntl is None:
+        return "flock advisory locking is unavailable"
+    if not Path("/proc/self/stat").is_file() or not Path("/proc/sys/kernel/random/boot_id").is_file():
+        return "/proc process identity is unavailable"
+    return None
 
 
 def identity(pid):

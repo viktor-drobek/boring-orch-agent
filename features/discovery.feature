@@ -1,7 +1,10 @@
 @R3 @R4 @R6 @R7 @ch01 @ch03 @ch06 @ch08 @ch10
 Feature: Discover executable environments only with the requested level of consent
   Inventory can record bounded evidence about a route, but it must not activate an agent or disclose credentials without explicit approval.
-  Source: PLAN.md, "Milestone 3 — Inventory and approval".
+  Source: PLAN.md, "Milestone 3 — Inventory and approval"; docs/discovery.md.
+
+  Background:
+    Given an isolated local agent
 
   Scenario: Passive initialization performs no process or network activity
     Given an installation with unknown available agent runtimes
@@ -46,11 +49,11 @@ Feature: Discover executable environments only with the requested level of conse
     Then the old approval is rejected
     And the route requires explicit re-approval
 
-  Scenario: An unlisted route escape hatch is one invocation only
-    Given an operator invokes one unlisted route with explicit approval
-    When that invocation completes
+  Scenario: An unlisted route escape is audited and never becomes an approval
+    Given an operator invokes one unlisted route locally
     Then the exception is recorded in the audit history
-    And a later invocation requires a new explicit approval
+    And no approval is created for the route
+    And a later invocation without the escape is refused
 
   Scenario: Discovery stores credentials only by reference
     Given a discovery route requires an API credential
