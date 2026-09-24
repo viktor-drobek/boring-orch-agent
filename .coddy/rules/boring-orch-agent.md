@@ -28,5 +28,8 @@ An exact `@session:<id>` is a read-only Coddy digest attachment capped at 24 KiB
 A single sequential dependent may reuse a completed session. A 1-to-N fan-out creates independent child sessions with shared lineage and never shares a live session concurrently. Restart recovery preserves unknown outcomes and never auto-replays them. Native lifecycle records remain separate from legacy SQLite task history.
 
 After a verified outcome, reassess and dispatch the next ready independent job.
-Keep credentials out of prompts, job files and reports. Synchronize rule trees in
-the same change as required by `AGENTS.md`; the Codex hook bridge stays unchanged.
+Keep credentials out of prompts, job files and reports. When agent instructions
+change, follow the complete Rules Sync contract in `AGENTS.md`: update paired topic
+bodies and frontmatter, verify the `CLAUDE.md` symlink, refresh the Codex index only
+when topics change, and include every affected tree in the same commit. The Codex
+hook bridge stays unchanged unless its canonical template changes.

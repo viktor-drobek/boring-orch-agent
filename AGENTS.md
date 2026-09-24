@@ -46,8 +46,18 @@ A linear dependent may reuse a completed session only sequentially. A 1-to-N fan
 
 ## Layered implementation order
 
-Build from the inside out: task validation and state model; durable Store transactions; manager transitions; worker and runner observations; artifacts and provider adapters; CLI and HTTP API; then examples and documentation. Higher layers must not bypass lower-layer validation or durable state transitions.
+Build from the inside out: task validation and state model; durable Store transactions; manager transitions; worker and runner observations; artifacts and provider adapters; CLI and HTTP API; then examples and documentation. Dependencies flow from outer adapters to established inner layers only. Implement and test each lower layer before adding behavior to a dependent layer. Higher layers must not bypass lower-layer validation or durable state transitions.
 
 ## Rules sync
 
-When changing agent instructions, update all related trees in the same commit: root `AGENTS.md` and `CLAUDE.md`, `.cursor/rules/`, `.claude/rules/`, `.codex/rules.md`, and `.coddy/rules/`. Cursor and Claude topic rule bodies must remain equivalent; Codex receives Cursor rules through `.codex/hooks/attach_rules.py` and has no duplicate rule body. Keep all rule files in English.
+**MANDATORY** - if any rule or agent-instruction file is added or changed, mirror the change to every rule tree in the same commit:
+
+1. Identify every rule tree in the repository: `.cursor/rules/`, `.claude/rules/`, root `AGENTS.md` / `CLAUDE.md`, the Codex bridge (`.codex/`), `.coddy/rules/`, and any other agent roots such as `.kimi/` or `.github/copilot-instructions.md`.
+2. For each edited file, locate or create its counterpart in every other tree under the same topic name.
+3. Copy the body verbatim, then adapt frontmatter and inline links: Cursor `globs:` plus `alwaysApply:` <-> Claude `paths:` or no `paths:` for an always-on rule, and Cursor `@file.mdc` <-> Claude `.claude/rules/file.md`.
+4. Keep the same language across all trees. Rule files and `AGENTS.md` are written in English unless the project deliberately uses another language.
+5. If `AGENTS.md` changed, verify that `CLAUDE.md` still resolves to the same content through its symlink.
+6. If a rule was added, renamed, or removed, refresh `.codex/rules.md`; `.codex/hooks.json` and `.codex/hooks/attach_rules.py` read `.cursor/rules/` directly and stay unchanged unless the canonical template changes.
+7. Include every synced file in the same commit and list it in the task report. Do not leave one tree ahead of another.
+
+Skip synchronization only when a rule is genuinely tool-specific. Document the exception in the divergent file so it remains intentional and visible.

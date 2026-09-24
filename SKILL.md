@@ -1,6 +1,6 @@
 ---
 name: boring-orch-agent
-version: 1.0.0
+version: 0.1.5
 description: >
   Run when the user asks to work with the boring-orch-agent orchestrator,
   submit or manage tasks, configure workers, or develop the orchestrator itself.

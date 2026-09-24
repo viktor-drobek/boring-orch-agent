@@ -32,6 +32,32 @@ class AgentGuidanceTests(unittest.TestCase):
                 self.assertEqual(body(ROOT / ".cursor" / "rules" / f"{name}.mdc"),
                                  body(ROOT / ".claude" / "rules" / f"{name}.md"))
 
+    def test_workflow_ends_with_complete_rules_sync_contract(self):
+        workflow = body(ROOT / ".cursor" / "rules" / "workflow.mdc")
+        sync = workflow.rsplit("## Rules Sync", 1)[1]
+        for step in range(1, 8):
+            with self.subTest(step=step):
+                self.assertIn(f"\n{step}.", sync)
+        for marker in ("every rule tree", "frontmatter and inline links", "same language",
+                       "CLAUDE.md", ".codex/rules.md", "same commit", "tool-specific"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, sync)
+        self.assertTrue(sync.rstrip().endswith("intentional and visible."))
+
+    def test_architecture_requires_lower_layers_before_dependents(self):
+        architecture = body(ROOT / ".cursor" / "rules" / "architecture.mdc")
+        self.assertIn("Dependencies flow from outer layers to established inner layers only.", architecture)
+        self.assertIn("Implement and test each lower layer before adding behavior to a dependent layer.", architecture)
+
+    def test_every_cursor_rule_is_reachable(self):
+        for path in (ROOT / ".cursor" / "rules").glob("*.mdc"):
+            with self.subTest(rule=path.name):
+                text = path.read_text(encoding="utf-8")
+                head = text.split("\n---\n", 1)[0]
+                has_globs = any(line.startswith("globs:") and line.partition(":")[2].strip()
+                                for line in head.splitlines())
+                self.assertTrue("alwaysApply: true" in head or has_globs)
+
     def test_codex_bridge_and_coddy_addendum_are_present(self):
         hook = ROOT / ".codex" / "hooks" / "attach_rules.py"
         self.assertTrue((ROOT / ".codex" / "hooks.json").is_file())

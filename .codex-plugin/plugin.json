@@ -1,6 +1,6 @@
 {
   "name": "boring-orch-agent",
-  "version": "1.0.0",
+  "version": "0.1.5",
   "description": "Durable local manager-worker orchestrator for bounded agent tasks. Provides canonical project instructions for working with SQLite-backed task dispatch, state management, and the HTTP /api/v1 API.",
   "author": {
     "name": "Viktor Drobek",
