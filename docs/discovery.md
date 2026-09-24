@@ -30,7 +30,8 @@ route's `credential_ref` when present and `env:BOA_API_KEY` otherwise.
 ### Handshake
 
 A handshake is an explicit, operator-approved invocation of one executable. Approval
-is made with a route and tier:
+is operator consent and is made locally, in the operator's Python process, with a
+route and tier. The HTTP API cannot create an approval:
 
 ```python
 from boring_agent.discovery import Discovery
@@ -79,11 +80,18 @@ outcome and are never silently retried.
 An approval is bound to:
 
 - the resolved route and arguments;
-- the resolved executable path and identity, including its content hash; and
-- fingerprints of environment overrides used to resolve the route.
+- the resolved executable path and identity, including its content hash;
+- fingerprints of environment overrides used to resolve the route; and
+- the effective generative endpoint: provider, base URL, model and credential
+  reference, including fallbacks from `BOA_PROVIDER`, `BOA_BASE_URL`, `BOA_MODEL`
+  and `env:BOA_API_KEY`.
 
-Changing an override, changing the executable contents, or resolving a different
-executable rejects the old approval and requires explicit re-approval. Approval
+Changing an override, changing the executable contents, resolving a different
+executable, or pointing the credential at a different provider or base URL rejects
+the old approval and requires explicit re-approval. A credential reference is
+therefore only ever sent to the endpoint the operator approved. Approvals created
+before the endpoint became part of the fingerprint no longer match and must be
+re-approved. Approval
 records contain only route metadata and fingerprints. They do not contain process
 environment values.
 
@@ -120,11 +128,16 @@ All endpoints use the normal authenticated API boundary:
 | `GET` | `/api/v1/discovery/approvals` | Read approval records |
 | `GET` | `/api/v1/discovery/evidence` | Read sanitized probe evidence |
 | `GET` | `/api/v1/discovery/audit` | Read approval/probe audit history |
-| `POST` | `/api/v1/discovery/approve` | Create handshake or generative approval |
-| `POST` | `/api/v1/discovery/handshake` | Run an approved handshake |
-| `POST` | `/api/v1/discovery/generative` | Run one approved completion probe |
+| `POST` | `/api/v1/discovery/approve` | Always refused with `403 operator_only` |
+| `POST` | `/api/v1/discovery/handshake` | Run a handshake for an operator-approved route |
+| `POST` | `/api/v1/discovery/generative` | Run one completion probe for an operator-approved route |
 
-Active POST routes must carry the route and the approval identifier returned by the
-approval call. The API does not start discovery from a read request or from Store
-initialization, and it rejects `allow_unlisted`. Discovery has no CLI subcommand
+Approval is operator consent to start an executable or to send a credential to a
+provider, so, like `allow_unlisted`, it cannot be carried by an HTTP request body:
+`POST /api/v1/discovery/approve` returns `403` and creates nothing. The operator
+approves locally with `Discovery.approve()`. Active POST routes must carry the
+route and the operator's approval identifier; a route that differs from the
+approval fingerprint (another executable, arguments, override or base URL) returns
+`409` without running anything. The API does not start discovery from a read
+request or from Store initialization, and it rejects `allow_unlisted`. Discovery has no CLI subcommand
 yet; `boa discover` is planned in `PLAN.md`.
