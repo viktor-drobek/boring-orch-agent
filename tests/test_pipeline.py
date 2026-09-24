@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 from tools.check_bdd import inventory, validate_report
@@ -40,6 +41,14 @@ class AcceptanceGateTests(unittest.TestCase):
     def test_all_notes_and_requirements_have_executable_examples(self):
         root = Path(__file__).resolve().parent.parent
         self.assertGreater(sum(inventory(root).values()), 0)
+
+    def test_direct_runtime_imports_are_declared_as_dependencies(self):
+        root = Path(__file__).resolve().parent.parent
+        with (root / "pyproject.toml").open("rb") as file:
+            dependencies = tomllib.load(file)["project"]["dependencies"]
+        names = {dependency.split("=", 1)[0].split("<", 1)[0].split(">", 1)[0]
+                 for dependency in dependencies}
+        self.assertTrue({"jsonschema", "referencing"}.issubset(names))
 
 
 class PipelineOrderTests(unittest.TestCase):

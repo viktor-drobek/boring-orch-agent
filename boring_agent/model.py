@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any
 
 from jsonschema import Draft202012Validator, SchemaError
@@ -33,12 +34,97 @@ class StorageError(AgentError):
     code = "storage_error"
 
 
+class Gone(AgentError):
+    code = "gone"
+
+
+class SessionError(AgentError):
+    code = "session_error"
+
+
+class SessionConflict(SessionError, Conflict):
+    code = "session_conflict"
+
+
+class SessionNotFound(SessionError, NotFound):
+    code = "session_not_found"
+
+
+SESSION_DIGEST_MAX_BYTES = 24 * 1024
+SESSION_MENTION_RE = re.compile(r"^@session:([A-Za-z0-9][A-Za-z0-9._:-]{0,199})$")
+
+
 def canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def session_id_from_mention(value: str | None) -> str | None:
+    """Return the ID from Coddy's read-only session mention, if present."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or SESSION_MENTION_RE.fullmatch(value) is None:
+        raise Invalid("session must be an exact @session:<id> mention")
+    return SESSION_MENTION_RE.fullmatch(value).group(1)
+
+
+def session_mention(session_id: str) -> str:
+    if not isinstance(session_id, str) or SESSION_MENTION_RE.fullmatch("@session:" + session_id) is None:
+        raise Invalid("session ID is not valid for an @session mention")
+    return "@session:" + session_id
+
+
+def validate_native_job(raw: dict) -> dict:
+    """Validate the immutable document consumed by native exec.
+
+    This intentionally does not widen ``validate_spec``: the latter is the
+    legacy manager/worker task contract. Native jobs are admitted by the
+    lifecycle scheduler and are not silently routed through that runtime.
+    """
+    fields(raw, {"id", "job_id", "objective", "runtime", "model", "session",
+                 "dependencies", "budget", "workspace", "output_schema",
+                 "expect_files", "metadata"}, "native job")
+    job_id = raw.get("job_id", raw.get("id"))
+    if not isinstance(job_id, str) or not 1 <= len(job_id) <= 200:
+        raise Invalid("native job id must contain 1–200 characters")
+    objective = raw.get("objective", "")
+    if not isinstance(objective, str) or not objective.strip() or len(objective) > 100_000:
+        raise Invalid("objective must contain 1–100000 characters")
+    runtime = raw.get("runtime")
+    if runtime not in ("acp", "coddy_native"):
+        raise Invalid("native job runtime must be acp or coddy_native")
+    model = raw.get("model")
+    if not isinstance(model, str) or not model.strip() or len(model) > 200:
+        raise Invalid("native job model is required and must be a nonempty model identifier")
+    mentioned_session = session_id_from_mention(raw.get("session"))
+    dependencies = raw.get("dependencies", [])
+    if not isinstance(dependencies, list) or any(not isinstance(item, str) or not item.strip() for item in dependencies):
+        raise Invalid("dependencies must be a list of nonempty job IDs")
+    if len(set(dependencies)) != len(dependencies):
+        raise Invalid("dependencies must not contain duplicates")
+    budget = raw.get("budget", {})
+    if not isinstance(budget, dict):
+        raise Invalid("budget must be an object")
+    fields(budget, {"deadline_seconds", "attempt_seconds", "max_steps", "max_tokens"}, "native job budget")
+    normalized_budget = {"deadline_seconds": 1800, "attempt_seconds": 1800,
+                         "max_steps": None, "max_tokens": None, **budget}
+    number(normalized_budget["deadline_seconds"], "deadline_seconds", .1, 86400)
+    number(normalized_budget["attempt_seconds"], "attempt_seconds", .1, 86400)
+    if normalized_budget["max_steps"] is not None:
+        number(normalized_budget["max_steps"], "max_steps", 1, 100, True)
+    if normalized_budget["max_tokens"] is not None:
+        number(normalized_budget["max_tokens"], "max_tokens", 1, 1_000_000_000, True)
+    normalized = {"id": job_id, "objective": objective, "runtime": runtime, "model": model,
+                  "session": "@session:" + mentioned_session if mentioned_session else None,
+                  "dependencies": sorted(set(dependencies)), "budget": normalized_budget,
+                  "workspace": raw.get("workspace"), "output_schema": raw.get("output_schema"),
+                  "expect_files": raw.get("expect_files", []), "metadata": raw.get("metadata", {})}
+    if len(canonical(normalized).encode()) > 256_000:
+        raise Invalid("Native job specification exceeds 256000 bytes")
+    return normalized
 
 
 def strict_json(text: str) -> Any:
@@ -79,7 +165,8 @@ def number(value, label, low, high, integer=False):
 
 def validate_spec(raw: dict, workspace_root: Path, allow_write: bool) -> dict:
     fields(raw, {"schema_version", "objective", "runtime", "workspace", "model",
-                 "sandbox", "tools", "output_schema", "budget", "retry", "demo", "expect_files"}, "task")
+                 "sandbox", "tools", "output_schema", "budget", "retry", "demo", "expect_files",
+                 "workflow"}, "task")
     if type(raw.get("schema_version", 1)) is not int or raw.get("schema_version", 1) != 1:
         raise Invalid("Only schema_version 1 is supported")
     objective = raw.get("objective")
@@ -165,10 +252,41 @@ def validate_spec(raw: dict, workspace_root: Path, allow_write: bool) -> dict:
         if not isinstance(item, str) or not item or len(item) > 4096 or Path(item).is_absolute() or \
                 any(part.startswith(".") for part in Path(item).parts):
             raise Invalid("expect_files entries must be visible relative paths inside the workspace")
+    workflow = raw.get("workflow")
+    if workflow is not None:
+        fields(workflow, {"enabled", "max_children", "max_tokens", "max_attempts",
+                          "planner_context_threshold", "planner", "authority"}, "workflow")
+        if not isinstance(workflow.get("enabled", True), bool):
+            raise Invalid("workflow.enabled must be boolean")
+        for name, low, high in (("max_children", 1, 1000), ("max_tokens", 1, 1_000_000_000),
+                                ("max_attempts", 1, 1000), ("planner_context_threshold", 1, 1_000_000_000)):
+            value = workflow.get(name)
+            if value is not None:
+                number(value, f"workflow.{name}", low, high, True)
+        planner = workflow.get("planner", {})
+        if not isinstance(planner, dict):
+            raise Invalid("workflow.planner must be an object")
+        fields(planner, {"objective", "runtime", "demo", "budget", "model", "tools"}, "workflow.planner")
+        authority = workflow.get("authority", {})
+        if not isinstance(authority, dict):
+            raise Invalid("workflow.authority must be an object")
+    normalized_workflow = None
+    if workflow is not None:
+        normalized_workflow = {
+            "enabled": workflow.get("enabled", True),
+            "max_children": workflow.get("max_children", 100),
+            "max_tokens": workflow.get("max_tokens", budget["max_tokens"]),
+            "max_attempts": workflow.get("max_attempts", retry["max_attempts"]),
+            "planner_context_threshold": workflow.get("planner_context_threshold"),
+            "planner": workflow.get("planner", {}),
+            "authority": workflow.get("authority", {}),
+        }
     spec = {"schema_version": 1, "objective": objective, "runtime": runtime,
             "workspace": str(path), "model": model, "sandbox": sandbox,
             "tools": sorted(set(tools)), "output_schema": schema, "budget": budget, "retry": retry, "demo": demo,
             "expect_files": sorted(set(expect_files))}
+    if normalized_workflow is not None:
+        spec["workflow"] = normalized_workflow
     if len(canonical(spec).encode()) > 256_000:
         raise Invalid("Task specification exceeds 256000 bytes")
     return spec

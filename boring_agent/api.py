@@ -13,7 +13,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .artifacts import read_result
+from .discovery import Discovery
 from .model import AgentError, Conflict, Invalid, NotFound, StorageError, strict_json
+from .session_lifecycle import SessionLifecycle
 from .store import Store
 from . import __version__
 
@@ -44,6 +46,7 @@ def _body(handler: BaseHTTPRequestHandler):
 
 def handler_type(store: Store, auth_token: str):
     """Create a handler bound to one initialized store and optional bearer token."""
+    lifecycle = SessionLifecycle(store)
     class Handler(BaseHTTPRequestHandler):
         server_version = "boring-orch-agent/" + __version__
 
@@ -90,8 +93,34 @@ def handler_type(store: Store, auth_token: str):
                     return self._reply(200, {"status": "ok", "version": __version__})
                 if parts == ["api", "v1", "capacity"]:
                     return self._reply(200, store.capacity())
+                if parts == ["api", "v1", "discovery", "inventory"]:
+                    return self._reply(200, {"inventory": store.discovery_inventory()})
+                if parts == ["api", "v1", "discovery", "approvals"]:
+                    return self._reply(200, {"approvals": store.discovery_approvals()})
+                if parts == ["api", "v1", "discovery", "evidence"]:
+                    return self._reply(200, {"evidence": store.discovery_evidence()})
+                if parts == ["api", "v1", "discovery", "audit"]:
+                    return self._reply(200, {"audit": store.discovery_audit()})
+                if parts == ["api", "v1", "sessions"]:
+                    return self._reply(200, {"sessions": lifecycle.sessions()})
+                if len(parts) == 4 and parts[:3] == ["api", "v1", "sessions"]:
+                    return self._reply(200, lifecycle.session(parts[3]))
+                if len(parts) == 5 and parts[:3] == ["api", "v1", "sessions"] and parts[4] == "branches":
+                    return self._reply(200, {"branches": lifecycle.branches(parts[3])})
+                if parts == ["api", "v1", "native", "jobs"]:
+                    return self._reply(200, {"jobs": lifecycle.jobs()})
+                if len(parts) == 5 and parts[:4] == ["api", "v1", "native", "jobs"]:
+                    return self._reply(200, lifecycle.job(parts[4]))
+                if parts == ["api", "v1", "native", "runs"]:
+                    return self._reply(200, {"runs": lifecycle.run_history()})
                 if parts == ["api", "v1", "tasks"]:
                     return self._reply(200, {"tasks": store.tasks()})
+                if parts == ["api", "v1", "workflows"]:
+                    return self._reply(200, {"workflows": store.workflows()})
+                if len(parts) == 4 and parts[:3] == ["api", "v1", "workflows"]:
+                    return self._reply(200, store.workflow(parts[3]))
+                if len(parts) == 5 and parts[:3] == ["api", "v1", "workflows"] and parts[4] == "children":
+                    return self._reply(200, {"children": store.workflow_children(parts[3])})
                 if len(parts) == 4 and parts[:3] == ["api", "v1", "tasks"]:
                     return self._reply(200, store.task(parts[3]))
                 if len(parts) == 5 and parts[:3] == ["api", "v1", "tasks"] and parts[4] == "events":
@@ -113,9 +142,41 @@ def handler_type(store: Store, auth_token: str):
                 if parts == ["api", "v1", "tasks"]:
                     key = self.headers.get("Idempotency-Key", "")
                     return self._reply(202, store.submit(_body(self), key))
+                if parts == ["api", "v1", "workflows"]:
+                    key = self.headers.get("Idempotency-Key", "")
+                    return self._reply(202, store.create_workflow(_body(self), key))
+                if len(parts) == 5 and parts[:3] == ["api", "v1", "workflows"] and parts[4] in ("plan", "replan"):
+                    plan = _body(self)
+                    return self._reply(202, store.settle_workflow_plan(parts[3], plan,
+                                                                       replan=parts[4] == "replan"))
                 if len(parts) == 5 and parts[:3] == ["api", "v1", "tasks"] and parts[4] == "cancel":
                     key = self.headers.get("Idempotency-Key", "")
                     return self._reply(202, store.cancel(parts[3], key))
+                if parts == ["api", "v1", "native", "jobs"]:
+                    return self._reply(202, lifecycle.register_job(_body(self)))
+                if parts == ["api", "v1", "discovery", "approve"]:
+                    payload = _body(self)
+                    route = payload.get("route")
+                    return self._reply(202, Discovery(store).approve(
+                        route, payload.get("tier", "handshake"), cost_policy=payload.get("cost_policy")))
+                if parts == ["api", "v1", "discovery", "handshake"]:
+                    payload = _body(self)
+                    return self._reply(202, Discovery(store).handshake(
+                        payload.get("route"), payload.get("approval_id"),
+                        timeout=payload.get("timeout"), max_output_bytes=payload.get("max_output_bytes"),
+                        allow_unlisted=payload.get("allow_unlisted", False)))
+                if parts == ["api", "v1", "discovery", "generative"]:
+                    payload = _body(self)
+                    return self._reply(202, Discovery(store).generative(
+                        payload.get("route"), payload.get("prompt", "Return a bounded capability response."),
+                        payload.get("approval_id"), output_tokens=payload.get("output_tokens", 128),
+                        timeout=payload.get("timeout", 30), allow_unlisted=payload.get("allow_unlisted", False)))
+                if parts == ["api", "v1", "native", "workflows"]:
+                    payload = _body(self)
+                    jobs = payload.get("jobs")
+                    if not isinstance(jobs, list):
+                        raise Invalid("Native workflow body must contain a jobs list")
+                    return self._reply(202, {"jobs": lifecycle.register_workflow(jobs)})
                 if len(parts) == 5 and parts[:3] == ["api", "v1", "attempts"] and parts[4] == "resolve":
                     payload = _body(self)
                     if set(payload) != {"note", "confirm_stopped"}:

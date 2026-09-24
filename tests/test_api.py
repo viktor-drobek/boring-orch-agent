@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+import sys
 
 from boring_agent.api import make_server
 from boring_agent.model import Invalid
@@ -87,9 +88,63 @@ class ApiTests(unittest.TestCase):
         _, task = self.request("GET", f"/api/v1/tasks/{task_id}")
         self.assertEqual(task["status"], "Cancelled")
 
+    def test_native_lifecycle_registration_is_observable_without_launching(self):
+        spec = {"id": "native-root", "objective": "prepare context",
+                "runtime": "coddy_native", "model": "codex/gpt-5.6-luna"}
+        status, job = self.request("POST", "/api/v1/native/jobs", spec)
+        self.assertEqual(status, 202)
+        self.assertEqual(job["state"], "ready")
+        status, jobs = self.request("GET", "/api/v1/native/jobs")
+        self.assertEqual(status, 200)
+        self.assertEqual(jobs["jobs"][0]["id"], "native-root")
+        status, sessions = self.request("GET", "/api/v1/sessions")
+        self.assertEqual(status, 200)
+        session_id = job["session_id"]
+        status, session = self.request("GET", f"/api/v1/sessions/{session_id}")
+        self.assertEqual(status, 200)
+        self.assertEqual(session["state"], "new")
+        status, branches = self.request("GET", f"/api/v1/sessions/{session_id}/branches")
+        self.assertEqual(status, 200)
+        self.assertEqual(branches["branches"], [])
+        self.assertEqual(len(sessions["sessions"]), 1)
+
     def test_remote_listener_without_a_token_is_refused_before_bind(self):
         with self.assertRaises(Invalid):
             make_server(self.store, host="0.0.0.0", port=8089)
+
+    def test_workflow_routes_keep_planning_and_child_state_durable(self):
+        spec = {"objective": "plan API work", "runtime": "demo",
+                "demo": {"delay_seconds": 0, "result": {"children": []}},
+                "workflow": {"enabled": True, "max_children": 4}}
+        status, receipt = self.request("POST", "/api/v1/workflows", spec,
+                                       {"Idempotency-Key": "workflow-api"})
+        self.assertEqual(status, 202)
+        status, duplicate = self.request("POST", "/api/v1/workflows", spec,
+                                         {"Idempotency-Key": "workflow-api"})
+        self.assertEqual(status, 202)
+        self.assertTrue(duplicate["duplicate"])
+        plan = {"children": [{"id": "one", "order": 0,
+                               "task": {"objective": "one", "runtime": "demo"}}]}
+        status, settled = self.request("POST", f"/api/v1/workflows/{receipt['workflow_id']}/plan", plan)
+        self.assertEqual(status, 202)
+        self.assertEqual(settled["state"], "accepted")
+        status, children = self.request("GET", f"/api/v1/workflows/{receipt['workflow_id']}/children")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(children["children"]), 1)
+
+    def test_discovery_inventory_and_approval_routes_are_durable(self):
+        status, inventory = self.request("GET", "/api/v1/discovery/inventory")
+        self.assertEqual(status, 200)
+        self.assertTrue(inventory["inventory"])
+        route = {"id": "api-fixture", "executable": sys.executable, "args": ["--version"]}
+        status, approval = self.request("POST", "/api/v1/discovery/approve",
+                                        {"route": route, "tier": "handshake"})
+        self.assertEqual(status, 202)
+        self.assertEqual(approval["route"], "api-fixture")
+        self.assertTrue(approval["fingerprint"])
+        status, approvals = self.request("GET", "/api/v1/discovery/approvals")
+        self.assertEqual(status, 200)
+        self.assertEqual(approvals["approvals"][0]["id"], approval["approval_id"])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+- Add ACP runtime, discovery, context admission, workflow orchestration, session lifecycle, native exec and parent-watchdog contracts with acceptance and regression coverage.
+- Add durable retention and idempotency tombstones, deadline settlement precedence, and resumable schema migrations.
+- Add hardening, configuration, isolation, cancellation, budget, discovery, exec and workflow documentation and scenarios.
+
 ## 0.1.3
 
 - Replace `TODO.md` with `PLAN.md`: the implementation plan for the context budget, workflow planning, environment discovery and the ACP runtime, with the hardening work from three independent reviews scheduled ahead of them.
