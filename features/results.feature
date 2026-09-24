@@ -20,6 +20,30 @@ Feature: Accept verified output rather than a runtime success claim
     And no task result is accepted
     And the event history includes "attempt.result_rejected"
 
+  Scenario: A file the task expects but never wrote cannot become success
+    Given a task that expects the file "reports/summary.md" and finishes without writing it
+    When the first execution finishes and is reconciled
+    Then the task status is "Failed"
+    And no task result is accepted
+    And the failure reason mentions "reports/summary.md"
+
+  Scenario: An expected file that exists lets the result be accepted
+    Given a task that expects the file "reports/summary.md" and finishes without writing it
+    And the workspace already contains "reports/summary.md"
+    When the first execution finishes and is reconciled
+    Then the task status is "Succeeded"
+
+  Scenario Outline: An expected path outside the workspace is rejected at submission
+    When I submit a task expecting the file "<path>"
+    Then the command fails with "invalid_request"
+    And there is exactly 0 tasks in the store
+
+    Examples:
+      | path           |
+      | ../outside.md  |
+      | /etc/passwd    |
+      | .hidden/a.md   |
+
   Scenario: Altering an artifact before settlement cannot produce success
     Given a task accepted with key "result"
     And the executor has produced a valid result awaiting settlement

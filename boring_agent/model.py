@@ -79,7 +79,7 @@ def number(value, label, low, high, integer=False):
 
 def validate_spec(raw: dict, workspace_root: Path, allow_write: bool) -> dict:
     fields(raw, {"schema_version", "objective", "runtime", "workspace", "model",
-                 "sandbox", "tools", "output_schema", "budget", "retry", "demo"}, "task")
+                 "sandbox", "tools", "output_schema", "budget", "retry", "demo", "expect_files"}, "task")
     if type(raw.get("schema_version", 1)) is not int or raw.get("schema_version", 1) != 1:
         raise Invalid("Only schema_version 1 is supported")
     objective = raw.get("objective")
@@ -158,9 +158,17 @@ def validate_spec(raw: dict, workspace_root: Path, allow_write: bool) -> dict:
     number(demo["fail_attempts"], "fail_attempts", 0, 10, True)
     if demo["failure_kind"] not in ("transient", "permanent"):
         raise Invalid("demo failure_kind must be transient or permanent")
+    expect_files = raw.get("expect_files", [])
+    if not isinstance(expect_files, list) or len(expect_files) > 50:
+        raise Invalid("expect_files must be a list of at most 50 relative paths")
+    for item in expect_files:
+        if not isinstance(item, str) or not item or len(item) > 4096 or Path(item).is_absolute() or \
+                any(part.startswith(".") for part in Path(item).parts):
+            raise Invalid("expect_files entries must be visible relative paths inside the workspace")
     spec = {"schema_version": 1, "objective": objective, "runtime": runtime,
             "workspace": str(path), "model": model, "sandbox": sandbox,
-            "tools": sorted(set(tools)), "output_schema": schema, "budget": budget, "retry": retry, "demo": demo}
+            "tools": sorted(set(tools)), "output_schema": schema, "budget": budget, "retry": retry, "demo": demo,
+            "expect_files": sorted(set(expect_files))}
     if len(canonical(spec).encode()) > 256_000:
         raise Invalid("Task specification exceeds 256000 bytes")
     return spec

@@ -4,6 +4,7 @@
   "runtime": "llm",
   "sandbox": "workspace-write",
   "tools": ["list_files", "read_file", "write_file"],
+  "expect_files": ["reports/agent-summary.md"],
   "output_schema": {
     "type": "object",
     "required": ["path", "summary"],

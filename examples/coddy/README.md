@@ -17,7 +17,9 @@ curl --fail-with-body http://127.0.0.1:12345/v1/models \
   -H "Authorization: Bearer $CODDY_HTTP_TOKEN"
 ```
 
-Coddy's replies do not include a `usage` object, so the orchestrator marks token accounting unknown. Leave `budget.max_tokens` unset in tasks sent to Coddy and bound the work with `max_steps`, `request_seconds`, and `attempt_seconds` instead. A reasoning model such as `neuraldeep/qwen3.6-unlim` needs the JSON-object request mode that the worker sends by default; keep `BOA_JSON_MODE` at its default for Coddy.
+Coddy's replies do not include a `usage` object (tested on 1.1.53 and 1.1.59, [coddy-agent#321](https://github.com/coddy-project/coddy-agent/issues/321)), so the orchestrator marks token accounting unknown. Leave `budget.max_tokens` unset in tasks sent to Coddy and bound the work with `max_steps`, `request_seconds`, and `attempt_seconds` instead. A reasoning model such as `neuraldeep/qwen3.6-unlim` needs the JSON-object request mode that the worker sends by default; keep `BOA_JSON_MODE` at its default for Coddy.
+
+Coddy also answers HTTP 500 for any upstream provider error, even an upstream 400 for a request over the provider plan's input-token limit ([coddy-agent#322](https://github.com/coddy-project/coddy-agent/issues/322)). The orchestrator holds such an attempt as `Unknown` until an operator resolves it; read `~/.coddy/logs/serve.log` for the real cause and keep task conversations small.
 
 Choose a model ID from that response, then initialize and start the orchestrator:
 

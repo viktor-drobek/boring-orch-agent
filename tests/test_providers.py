@@ -161,6 +161,23 @@ class ProviderTests(unittest.TestCase):
             self.assertTrue(task["usage_unknown"])
             self.assertIsNone(task["attempts"][0]["tokens"])
 
+    def test_truncated_completions_are_explained(self):
+        # Empty and cut off: the reasoning budget was exhausted; deterministic, so permanent.
+        with server([completion("openai", None, truncated=True) and (200, completion("openai", None, truncated=True))]) as (base, _, _, _), self.environment("openai", base):
+            task_id, aid = self.submit(retry={"replay_safe": True, "max_attempts": 2, "backoff_seconds": .01})
+            run_attempt(self.store, aid, "llm")
+            self.manager.tick()
+            task = self.store.task(task_id)
+            self.assertEqual((task["status"], task["attempts"][0]["error_kind"]), ("Failed", "permanent"))
+            self.assertIn("truncated the completion before any content", task["reason"])
+        # Cut off mid-object: still a validation failure, but it says why.
+        body = {"choices": [{"message": {"content": '{"action":"final","result":{"answer":'}, "finish_reason": "length"}]}
+        with server([(200, body)]) as (base, _, _, _), self.environment("openai", base):
+            task_id, aid = self.submit()
+            run_attempt(self.store, aid, "llm")
+            self.manager.tick()
+            self.assertIn("cut off at the output limit", self.store.task(task_id)["reason"])
+
     def test_malformed_action_and_step_budget_are_failures(self):
         for body, budget in (({"choices": [{"message": {"content": "not JSON"}}]}, {}),
                              (completion("openai", {"action": "read_file", "path": ".env"}), {"max_steps": 1})):

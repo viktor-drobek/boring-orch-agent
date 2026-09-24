@@ -1,4 +1,4 @@
-include AGENTS.md CLAUDE.md behave.ini Makefile CONTRIBUTING.md README.md LICENSE CHANGELOG.md
+include AGENTS.md CLAUDE.md behave.ini Makefile CONTRIBUTING.md README.md LICENSE CHANGELOG.md PLAN.md
 include .github/workflows/build.yml
 recursive-include features *.feature *.py
 recursive-include tests *.py
