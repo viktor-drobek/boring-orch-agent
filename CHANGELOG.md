@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0
+
 - Add a dedicated `coddy` provider for `POST /v1/responses`, with stable `X-Coddy-Session-ID`, JSON and SSE parsing, named event capture, safe error classification, and no behavior changes for the existing OpenAI, Anthropic, or Ollama adapters.
 - Add durable Coddy session preparation. New task sessions run `/compact` and `/rpa-init` once; prepared resumed sessions are adopted without repeating warm-up.
 - Add strict `coddy` task options for session reuse, streaming, permission inheritance, and complete `coddy.mention` serialization through `@agent:<name>` and `spawn_agent`. Child permission mode may only narrow the current Coddy session.
