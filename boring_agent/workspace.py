@@ -1,9 +1,10 @@
 """Explicit bounded file tools. This is a tool policy, not an OS sandbox."""
+import errno
 import os
 from pathlib import Path
 import tempfile
 
-from .model import Invalid, fields
+from .model import Invalid, fields, representable_path
 
 
 class Workspace:
@@ -12,9 +13,23 @@ class Workspace:
         self.allowed = set(tools)
         self.store_home = Path(store_home).resolve()
 
+    @staticmethod
+    def os_error(exc, relative):
+        """A model-safe description of a failed file operation.
+
+        ``str(OSError)`` embeds absolute host paths; the model only gets the errno
+        name, the OS reason and the workspace-relative path it asked for.
+        """
+        name = errno.errorcode.get(exc.errno, type(exc).__name__) if exc.errno else type(exc).__name__
+        reason = f" ({exc.strerror})" if exc.strerror else ""
+        target = relative if isinstance(relative, str) and representable_path(relative) else "."
+        return f"File operation failed: {name}{reason} for workspace path {target!r}"
+
     def path(self, value):
         if not isinstance(value, str) or not value or len(value) > 4096:
             raise Invalid("A relative workspace path is required")
+        if not representable_path(value):
+            raise Invalid("Paths must not contain NUL bytes or characters the filesystem cannot represent")
         part = Path(value)
         if part.is_absolute() or any(p.startswith(".") and p != "." for p in part.parts):
             raise Invalid("Absolute paths, parent paths and hidden files are unavailable")
@@ -61,7 +76,11 @@ class Workspace:
                 raise Invalid("Only UTF-8 text files are supported") from exc
         if name == "write_file":
             content = action.get("content")
-            if not isinstance(content, str) or len(content.encode()) > 65536:
+            try:
+                size = len(content.encode()) if isinstance(content, str) else None
+            except UnicodeError:
+                size = None
+            if size is None or size > 65536:
                 raise Invalid("write_file requires UTF-8 text of at most 64 KiB")
             if path.exists() and not path.is_file():
                 raise Invalid("Target must be a regular file")
@@ -88,6 +107,7 @@ class Workspace:
             try:
                 if not self.path(relative).is_file():
                     absent.append(relative)
-            except Invalid:
+            except (Invalid, OSError):
+                # A path the OS cannot stat (for example a too-long name) is not a written file.
                 absent.append(relative)
         return absent

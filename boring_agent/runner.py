@@ -224,8 +224,10 @@ class Controller:
             self.checkpoint()
             try:
                 result = workspace.call(action)
-            except (Invalid, OSError) as exc:
+            except Invalid as exc:
                 result = {"error": str(exc)}
+            except OSError as exc:
+                result = {"error": Workspace.os_error(exc, action.get("path", "."))}
             with self.store.transaction() as db:
                 event(db, "attempt.tool", self.task["id"], self.attempt["id"], step=step,
                       tool=action.get("action"), path=action.get("path"), failed="error" in result)

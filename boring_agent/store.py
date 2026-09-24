@@ -152,6 +152,9 @@ class Store:
             raise NotFound(f"Store not initialized: {self.home}. Run boa init first.")
         try:
             db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        except sqlite3.Error as exc:
+            raise StorageError(f"Cannot open store: {exc}") from exc
+        try:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA synchronous=FULL")
@@ -160,8 +163,12 @@ class Store:
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone():
                 self._migrate(db)
             return db
-        except sqlite3.Error as exc:
-            raise StorageError(f"Cannot open store: {exc}") from exc
+        except BaseException as exc:
+            # Never hand back, or leak, a half-opened connection.
+            db.close()
+            if isinstance(exc, sqlite3.Error):
+                raise StorageError(f"Cannot open store: {exc}") from exc
+            raise
 
     @staticmethod
     def _migration_tables(db):
@@ -348,28 +355,27 @@ class Store:
                 intent = db.execute("SELECT * FROM retention_intents ORDER BY created_at,task_id LIMIT 1").fetchone()
                 if intent is None:
                     break
-                task_id, phase = intent["task_id"], intent["phase"]
-                if phase == "dependents":
-                    db.execute("DELETE FROM workflow_deliveries WHERE source_task_id=? OR target_task_id=?", (task_id, task_id))
-                    db.execute("DELETE FROM workflow_children WHERE task_id=?", (task_id,))
-                    db.execute("DELETE FROM outbox WHERE attempt_id IN (SELECT id FROM attempts WHERE task_id=?)", (task_id,))
-                    db.execute("DELETE FROM attempts WHERE task_id=?", (task_id,))
-                    db.execute("DELETE FROM events WHERE task_id=?", (task_id,))
+                task_id, done = intent["task_id"], intent["phase"]
+                if done == "dependents":
+                    self._delete_task_dependents(db, task_id)
                     db.execute("UPDATE retention_intents SET phase='task',updated_at=? WHERE task_id=?", (now, task_id))
-                    phase = "task"
-                elif phase == "task":
+                elif done == "task":
+                    # A terminal task still accepts commands between phases (for example a
+                    # cancel records task.cancel_ignored_terminal). Remove any dependent row
+                    # written since the dependents phase in this same commit, so the foreign
+                    # key can never block this or any later retention intent.
+                    self._delete_task_dependents(db, task_id)
                     db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
                     db.execute("UPDATE retention_intents SET phase='artifact',updated_at=? WHERE task_id=?", (now, task_id))
-                    phase = "artifact"
-                elif phase == "artifact":
+                elif done == "artifact":
                     for relative in json.loads(intent["artifact_paths"]):
                         (self.home / relative).unlink(missing_ok=True)
                     db.execute("DELETE FROM retention_intents WHERE task_id=?", (task_id,))
                     completed.append(task_id)
-                    phase = "complete"
-                if stop_after == phase:
-                    break
-            if stop_after == phase:
+                else:
+                    raise StorageError(f"Unknown retention phase for task {task_id}")
+            # stop_after names the phase just committed ("dependents", "task" or "artifact").
+            if stop_after is not None and stop_after == done:
                 break
         # Tombstones are retained independently of task payloads until their
         # own horizon, so late duplicate submissions remain harmless.
@@ -379,6 +385,15 @@ class Store:
                         WHERE accepted_at + ? < ? AND NOT EXISTS
                         (SELECT 1 FROM tasks WHERE tasks.id=commands.task_id)""", (horizon, now))
         return {"deleted": completed, "pending": [r[0] for r in self._retention_pending()]}
+
+    @staticmethod
+    def _delete_task_dependents(db, task_id):
+        """Delete every row that references a task, in foreign-key order."""
+        db.execute("DELETE FROM workflow_deliveries WHERE source_task_id=? OR target_task_id=?", (task_id, task_id))
+        db.execute("DELETE FROM workflow_children WHERE task_id=?", (task_id,))
+        db.execute("DELETE FROM outbox WHERE attempt_id IN (SELECT id FROM attempts WHERE task_id=?)", (task_id,))
+        db.execute("DELETE FROM attempts WHERE task_id=?", (task_id,))
+        db.execute("DELETE FROM events WHERE task_id=?", (task_id,))
 
     def _retention_pending(self):
         with self.reading() as db:
@@ -563,17 +578,17 @@ class Store:
         from .workflows import WorkflowStore
         return WorkflowStore(self).children(workflow_id, revision)
 
-    def settle_workflow_plan(self, workflow_id, plan, *, replan=False):
+    def settle_workflow_plan(self, workflow_id, plan, *, replan=False, key=None):
         from .workflows import WorkflowStore
-        return WorkflowStore(self).settle_plan(workflow_id, plan, replan=replan)
+        return WorkflowStore(self).settle_plan(workflow_id, plan, replan=replan, key=key)
 
     def deliver_workflow_dependencies(self, task_id):
         from .workflows import WorkflowStore
         return WorkflowStore(self).deliver_dependencies(task_id)
 
-    def replan_workflow(self, workflow_id, plan):
+    def replan_workflow(self, workflow_id, plan, key=None):
         from .workflows import WorkflowStore
-        return WorkflowStore(self).replan(workflow_id, plan)
+        return WorkflowStore(self).replan(workflow_id, plan, key=key)
 
     # Discovery is an independent, consent-aware boundary.  These delegates keep
     # callers from importing an implementation detail while preserving the same

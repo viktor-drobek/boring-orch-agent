@@ -15,7 +15,7 @@ import uuid
 from jsonschema import Draft202012Validator, SchemaError
 
 from .artifacts import artifact_checksum
-from .model import Conflict, Invalid, canonical, digest, fields, validate_spec
+from .model import Conflict, Invalid, NotFound, canonical, digest, fields, validate_spec
 from .store import event
 
 
@@ -88,9 +88,22 @@ CREATE TABLE IF NOT EXISTS workflow_deliveries(
  payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, bytes_count INTEGER NOT NULL,
  state TEXT NOT NULL, error_message TEXT, created_at REAL NOT NULL, delivered_at REAL,
  UNIQUE(workflow_id,source_task_id,target_task_id));
+CREATE TABLE IF NOT EXISTS workflow_plan_commands(
+ command_id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflow_roots(id),
+ receipt TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS workflow_children_task ON workflow_children(task_id);
 CREATE INDEX IF NOT EXISTS workflow_deliveries_target ON workflow_deliveries(target_task_id);
 """
+
+# Task fields an untrusted plan may set on a child.  Everything else, including
+# ``workflow`` and ``schema_version``, is inherited from the root or refused.
+CHILD_TASK_FIELDS = frozenset({"objective", "runtime", "workspace", "model", "sandbox", "tools",
+                               "output_schema", "budget", "retry", "demo", "expect_files", "coddy"})
+PERMISSION_RANK = {"ask": 0, "accept_edits": 1, "bypass": 2}
+# Coddy mention fields a child may change.  Every other mention field, such as
+# the subagent name, its model or its timeouts, must equal the root's value.
+NARROWABLE_MENTION_FIELDS = frozenset({"prompt", "description", "permission_mode"})
+TERMINAL_STATUSES = ("Succeeded", "Failed", "Cancelled")
 
 
 class WorkflowStore:
@@ -103,7 +116,16 @@ class WorkflowStore:
 
     def _ensure_schema(self):
         with self.store.transaction() as db:
-            db.executescript(WORKFLOW_SCHEMA)
+            self._ensure_schema_locked(db)
+
+    @staticmethod
+    def _ensure_schema_locked(db):
+        # executescript() would COMMIT the caller's BEGIN IMMEDIATE transaction
+        # first, dropping its write lock and making earlier writes durable even
+        # if the transaction later fails.  Run each DDL statement in place.
+        for statement in WORKFLOW_SCHEMA.split(";"):
+            if statement.strip():
+                db.execute(statement)
 
     @staticmethod
     def _json(value, default):
@@ -121,7 +143,7 @@ class WorkflowStore:
     def _root_locked(self, db, workflow_id):
         row = db.execute("SELECT * FROM workflow_roots WHERE id=?", (workflow_id,)).fetchone()
         if row is None:
-            raise Invalid(f"Unknown workflow: {workflow_id}")
+            raise NotFound(f"Unknown workflow: {workflow_id}")
         return row
 
     @staticmethod
@@ -227,12 +249,74 @@ class WorkflowStore:
     def _authority(spec):
         return {key: deepcopy(value) for key, value in spec.items() if key != "workflow"}
 
+    @staticmethod
+    def _narrow_coddy(root_coddy, child_task, child_id):
+        """Merge a child's ``coddy`` block onto the root's, refusing any widening.
+
+        A plan may keep or drop the root session, lower the permission mode and
+        adjust the prompt text of an existing mention.  It can never resume a new
+        session, raise a permission mode, or add or redirect a subagent mention.
+        """
+        if "coddy" not in child_task:
+            return deepcopy(root_coddy)
+        requested = child_task["coddy"]
+        if requested is None:
+            return None
+        if not isinstance(requested, dict):
+            raise Invalid(f"child {child_id} coddy must be an object")
+        root = root_coddy or {"session": None, "permission_mode": None, "stream": True, "mention": None}
+        merged = {**deepcopy(root), **deepcopy(requested)}
+        if merged.get("session") is not None and merged.get("session") != root["session"]:
+            raise Invalid(f"child {child_id} requests a coddy session the root did not resume")
+        # An unset root mode inherits from the session; a plan may only lower
+        # that to ``ask`` because the inherited level is not known here.
+        limit = PERMISSION_RANK[root["permission_mode"]] if root["permission_mode"] else 0
+        mode = merged.get("permission_mode")
+        if mode is not None and (mode not in PERMISSION_RANK or PERMISSION_RANK[mode] > limit):
+            raise Invalid(f"child {child_id} broadens the coddy permission mode")
+        mention = merged.get("mention")
+        root_mention = root["mention"]
+        if "mention" in requested and mention is not None:
+            if root_mention is None:
+                raise Invalid(f"child {child_id} introduces a coddy subagent mention")
+            if not isinstance(mention, dict):
+                raise Invalid(f"child {child_id} coddy.mention must be an object")
+            mention = {**deepcopy(root_mention), **mention}
+            for name in (set(mention) | set(root_mention)) - NARROWABLE_MENTION_FIELDS:
+                if mention.get(name) != root_mention.get(name):
+                    raise Invalid(f"child {child_id} changes coddy.mention.{name}")
+            mention_limit = root_mention.get("permission_mode") or root["permission_mode"]
+            mention_rank = PERMISSION_RANK[mention_limit] if mention_limit else 0
+            child_mode = mention.get("permission_mode")
+            if child_mode is not None and \
+                    (child_mode not in PERMISSION_RANK or PERMISSION_RANK[child_mode] > mention_rank):
+                raise Invalid(f"child {child_id} broadens the coddy mention permission mode")
+            merged["mention"] = mention
+        return merged
+
     @classmethod
-    def _child_spec(cls, root_spec, child, workspace_root, allow_write, remaining_tokens, remaining_attempts):
+    def _child_spec(cls, root_spec, child, workspace_root, allow_write, token_share, workflow_bounded):
+        """Build one child's task from root authority and the plan's narrowing.
+
+        ``token_share`` is the ceiling assigned to a child that sets no
+        ``max_tokens`` under a bounded workflow; the caller checks the sum.
+        """
+        child_task = child["task"]
+        unknown = set(child_task) - CHILD_TASK_FIELDS
+        if unknown:
+            raise Invalid(f"child {child['id']} sets task fields a plan cannot set: {', '.join(sorted(unknown))}")
         raw = deepcopy(root_spec)
         raw.pop("workflow", None)
-        raw.update(child["task"])
+        if raw.get("runtime") != "demo":
+            raw.pop("demo", None)  # the root's normalized demo defaults are not authority
+        coddy = cls._narrow_coddy(root_spec.get("coddy"), child_task, child["id"])
+        raw.update(deepcopy({key: value for key, value in child_task.items() if key != "coddy"}))
+        raw.pop("coddy", None)
+        if coddy is not None:
+            raw["coddy"] = coddy
         # A planner's output is untrusted: it may only remove authority.
+        if raw.get("runtime") != root_spec["runtime"]:
+            raise Invalid(f"child {child['id']} requests a runtime outside the root authority")
         if raw.get("workspace", root_spec["workspace"]) != root_spec["workspace"]:
             raise Invalid(f"child {child['id']} requests a different workspace")
         if root_spec["sandbox"] == "read-only" and raw.get("sandbox", "read-only") != "read-only":
@@ -240,11 +324,11 @@ class WorkflowStore:
         if raw.get("sandbox", root_spec["sandbox"]) == "workspace-write" and "write_file" not in root_spec["tools"]:
             raise Invalid(f"child {child['id']} requests write access not granted by the root")
         child_tools = raw.get("tools", root_spec["tools"])
-        if not set(child_tools).issubset(root_spec["tools"]):
+        if not isinstance(child_tools, list) or not set(child_tools).issubset(root_spec["tools"]):
             raise Invalid(f"child {child['id']} requests tools outside the root authority")
-        if root_spec["model"] is not None and raw.get("model", root_spec["model"]) != root_spec["model"]:
+        # A null root model is not a licence to pick one: the child must keep it.
+        if raw.get("model") != root_spec["model"]:
             raise Invalid(f"child {child['id']} requests a model outside the root policy")
-        child_task = child["task"]
         for key in ("retry", "budget"):
             if key in child_task and not isinstance(child_task[key], dict):
                 raise Invalid(f"child {child['id']} {key} must be an object")
@@ -256,18 +340,21 @@ class WorkflowStore:
                 (retry.get("replay_safe", False) and not root_spec["retry"]["replay_safe"]):
             raise Invalid(f"child {child['id']} broadens retry authority")
         root_budget = root_spec["budget"]
-        budget = {**root_budget, **child_task.get("budget", {})}
+        child_budget = child_task.get("budget", {})
+        budget = {**root_budget, **child_budget}
         if root_budget["max_tokens"] is not None and budget.get("max_tokens") is None:
             raise Invalid(f"child {child['id']} cannot remove the root token ceiling")
+        if workflow_bounded and "max_tokens" in child_budget and child_budget["max_tokens"] is None:
+            raise Invalid(f"child {child['id']} cannot remove the workflow token ceiling")
         for key in ("deadline_seconds", "attempt_seconds", "max_steps", "max_output_bytes",
                     "request_seconds", "output_tokens", "max_tokens"):
-            if budget.get(key) is not None and root_budget.get(key) is not None and budget[key] > root_budget[key]:
+            value, ceiling = budget.get(key), root_budget.get(key)
+            if value is not None and ceiling is not None and \
+                    isinstance(value, (int, float)) and not isinstance(value, bool) and value > ceiling:
                 raise Invalid(f"child {child['id']} broadens budget {key} beyond the root")
-        requested_tokens = budget.get("max_tokens")
-        if remaining_tokens is not None and requested_tokens is not None and requested_tokens > remaining_tokens:
-            raise Invalid(f"child {child['id']} exceeds the remaining workflow token budget")
-        if remaining_attempts < 1:
-            raise Invalid("workflow attempt budget is exhausted")
+        if "max_tokens" not in child_budget and token_share is not None:
+            inherited = budget.get("max_tokens")
+            budget["max_tokens"] = token_share if inherited is None else min(inherited, token_share)
         raw["retry"] = retry
         raw["budget"] = budget
         raw["tools"] = child_tools
@@ -357,73 +444,148 @@ class WorkflowStore:
         root = self._root_locked(db, workflow_id)
         db.execute("INSERT INTO workflow_plans(workflow_id,revision,plan,plan_sha256,state,reason,created_at) VALUES(?,?,?,?,?,?,?)",
                    (workflow_id, revision, canonical(plan), digest(plan), "rejected", reason, time.time()))
-        db.execute("UPDATE workflow_roots SET state='failed',reason=?,updated_at=? WHERE id=?",
-                   (reason, time.time(), workflow_id))
+        if root["plan_revision"] == 0:
+            # Without an accepted plan the workflow cannot proceed.  A rejected
+            # replacement for an accepted plan leaves the current revision, and
+            # its executing children, exactly as they were.
+            db.execute("UPDATE workflow_roots SET state='failed',reason=?,updated_at=? WHERE id=?",
+                       (reason, time.time(), workflow_id))
         self._workflow_event(db, root, "workflow.plan_rejected", revision=revision, reason=reason)
+
+    def _carry_source_locked(self, db, workflow_id, child_key, before_revision):
+        """The latest succeeded task for ``child_key``; only verified work is carried."""
+        source = self._source_child_locked(db, workflow_id, child_key, before_revision)
+        if source is None:
+            return None
+        status_row = db.execute("SELECT status FROM tasks WHERE id=?", (source["task_id"],)).fetchone()
+        return source if status_row is not None and status_row[0] == "Succeeded" else None
+
+    @staticmethod
+    def _open_children_locked(db, workflow_id):
+        """Non-terminal child tasks of any revision, with their current attempt state.
+
+        ``not_started`` is true only when nothing can have run: the task has no
+        current attempt or its attempt is still ``Queued``.  The runner commits
+        ``Launching`` before any effect in a transaction that requires ``Queued``,
+        so this serialized transaction proves a queued attempt has not started.
+        """
+        rows = db.execute("""SELECT DISTINCT t.id AS task_id,t.status,t.spec,t.tokens_used,
+                                    t.current_attempt_id,a.state AS attempt_state
+                             FROM workflow_children c JOIN tasks t ON t.id=c.task_id
+                             LEFT JOIN attempts a ON a.id=t.current_attempt_id
+                             WHERE c.workflow_id=? AND t.status NOT IN ('Succeeded','Failed','Cancelled')""",
+                          (workflow_id,)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["not_started"] = item["current_attempt_id"] is None or item["attempt_state"] == "Queued"
+            result.append(item)
+        return result
 
     def _settle_plan_locked(self, db, workflow_id, plan, *, replan=False):
         root = self._root_locked(db, workflow_id)
+        if not replan and root["plan_revision"] > 0:
+            # A plan is settled once; changing it is an explicit replan.  The
+            # manager reaches this path when a planner finishes after a plan was
+            # already settled through the API, so record the fact without failing.
+            self._workflow_event(db, root, "workflow.plan_ignored", revision=root["plan_revision"],
+                                 reason="workflow plan is already settled")
+            return {"workflow_id": workflow_id, "revision": root["plan_revision"], "state": "ignored",
+                    "children": [], "reason": "workflow plan is already settled"}
         root_spec = json.loads(root["authority"])
+        settings = self.store.settings_from(db)
         latest = db.execute("SELECT COALESCE(MAX(revision),0) FROM workflow_plans WHERE workflow_id=?",
                             (workflow_id,)).fetchone()[0]
         revision = max(root["plan_revision"], latest) + 1
+        open_children = self._open_children_locked(db, workflow_id) if replan else []
         try:
             children = self._validate_plan_shape(plan, root["max_children"])
             remaining_tokens = None if root["max_tokens"] is None else root["max_tokens"] - root["tokens_used"]
             remaining_attempts = root["max_attempts"] - root["attempts_used"]
             if remaining_tokens is not None and remaining_tokens <= 0:
                 raise Invalid("workflow token budget is exhausted")
+            if remaining_attempts < 1:
+                raise Invalid("workflow attempt budget is exhausted")
+            available = remaining_tokens
+            if available is not None:
+                # Launched children of earlier revisions keep their allocation
+                # until they settle; only provably unstarted work is released.
+                for old in open_children:
+                    if not old["not_started"]:
+                        ceiling = json.loads(old["spec"])["budget"].get("max_tokens") or 0
+                        available -= max(0, ceiling - old["tokens_used"])
+                if available <= 0:
+                    raise Invalid("workflow token budget is fully allocated to children still running")
+            carried = {child["id"]: self._carry_source_locked(db, workflow_id, child["id"], root["plan_revision"])
+                       for child in children}
+            fresh = [child for child in children if carried[child["id"]] is None]
+            share = None
+            if available is not None:
+                explicit = [child["task"]["budget"]["max_tokens"] for child in fresh
+                            if isinstance(child["task"].get("budget"), dict) and "max_tokens" in child["task"]["budget"]]
+                implicit = len(fresh) - len(explicit)
+                if implicit:
+                    allocated = sum(value for value in explicit
+                                    if isinstance(value, int) and not isinstance(value, bool))
+                    share = (available - allocated) // implicit
+                    if share < 1:
+                        raise Invalid("no workflow token budget is left for children without a token ceiling")
             prepared = []
             for child in children:
-                spec = self._child_spec(root_spec, child, Path(self.store.settings()["workspace_root"]),
-                                        self.store.settings()["allow_write"], remaining_tokens, remaining_attempts)
-                prepared.append((child, spec))
+                is_fresh = carried[child["id"]] is None
+                spec = self._child_spec(root_spec, child, Path(settings["workspace_root"]), settings["allow_write"],
+                                        share if is_fresh else None, available is not None)
+                prepared.append((child, spec, carried[child["id"]]))
+            if available is not None:
+                requested = sum(spec["budget"]["max_tokens"] for _, spec, source in prepared if source is None)
+                if requested > available:
+                    raise Invalid(f"children request {requested} tokens but the workflow has {available} left")
         except (Invalid, SchemaError, RecursionError) as exc:
             self._record_rejected_locked(db, workflow_id, revision, plan, str(exc))
             return {"workflow_id": workflow_id, "revision": revision, "state": "rejected",
                     "children": [], "reason": str(exc)}
 
-        if replan:
-            # Cancellation precedes replacement insertion.  Running children are
-            # never silently killed; they remain the operator's responsibility.
-            for old in db.execute("""SELECT c.*,t.status,t.desired_action FROM workflow_children c
-                                      JOIN tasks t ON t.id=c.task_id WHERE c.workflow_id=? AND c.revision=?""",
-                                  (workflow_id, root["plan_revision"])).fetchall():
-                if old["status"] not in ("Succeeded", "Failed", "Cancelled"):
-                    if old["status"] in ("Pending", "Scheduled"):
-                        db.execute("UPDATE tasks SET desired_action='Cancel',status='Cancelled',reason='obsolete_by_replan',version=version+1 WHERE id=?",
-                                   (old["task_id"],))
-                        db.execute("""UPDATE attempts SET reserved=0,state='Cancelled',settled=1,
-                                    finished_at=?,heartbeat=? WHERE task_id=? AND state='Queued'""",
-                                   (time.time(), time.time(), old["task_id"]))
-                        event(db, "workflow.child_cancelled", old["task_id"], reason="obsolete_by_replan")
+        now = time.time()
+        for old in open_children:
+            # Cancellation precedes replacement insertion.  Only provably unstarted
+            # work is cancelled here.  A launched or Unknown child keeps its
+            # reservation and goes through the normal cancellation path; it is
+            # reported Cancelled only after the runner confirms the stop.
+            db.execute("UPDATE tasks SET desired_action='Cancel',reason='obsolete_by_replan',version=version+1 WHERE id=?",
+                       (old["task_id"],))
+            if old["not_started"]:
+                if old["current_attempt_id"] is not None:
+                    db.execute("""UPDATE attempts SET reserved=0,state='Cancelled',settled=1,sequence=sequence+1,
+                                finished_at=?,heartbeat=?,tokens=0,error_kind='cancelled',
+                                error_message='Cancelled before launch' WHERE id=? AND state='Queued'""",
+                               (now, now, old["current_attempt_id"]))
+                db.execute("UPDATE tasks SET status='Cancelled',finished_at=?,observation_condition='Fresh' WHERE id=?",
+                           (now, old["task_id"]))
+                event(db, "workflow.child_cancelled", old["task_id"], reason="obsolete_by_replan")
+            else:
+                event(db, "workflow.child_cancel_requested", old["task_id"], reason="obsolete_by_replan",
+                      attempt_state=old["attempt_state"])
 
         db.execute("INSERT INTO workflow_plans(workflow_id,revision,plan,plan_sha256,state,created_at) VALUES(?,?,?,?,?,?)",
                    (workflow_id, revision, canonical(plan), digest(plan), "accepted", time.time()))
         inserted = []
-        for index, (child, spec) in enumerate(prepared):
-            carried = self._source_child_locked(db, workflow_id, child["id"], root["plan_revision"])
+        for index, (child, spec, carried_source) in enumerate(prepared):
+            internal = f"workflow:{workflow_id}:revision:{revision}:child:{index}"
             # Only verified, completed work is carried over. A child that was
             # pending, running or cancelled (including one cancelled just above as
             # obsolete) gets a fresh task under the new revision.
-            if carried is not None:
-                status_row = db.execute("SELECT status FROM tasks WHERE id=?", (carried["task_id"],)).fetchone()
-                if status_row is None or status_row[0] != "Succeeded":
-                    carried = None
-            if carried is not None:
-                task_id = carried["task_id"]
-                carried_output = carried["carried_output"] or self._task_result_json(db, task_id)
-                internal = f"workflow:{workflow_id}:revision:{revision}:child:{index}"
+            if carried_source is not None:
+                task_id = carried_source["task_id"]
+                carried_output = carried_source["carried_output"] or self._task_result_json(db, task_id)
                 db.execute("""INSERT INTO workflow_children(
                     internal_id,workflow_id,revision,child_index,child_key,task_id,dependencies,delivery,
                     carried_from_task_id,carried_output,measurements) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                            (internal, workflow_id, revision, index, child["id"], task_id,
-                            canonical(child["dependencies"]), canonical(child["delivery"]), carried["task_id"],
-                            carried_output, carried["measurements"]))
+                            canonical(child["dependencies"]), canonical(child["delivery"]), carried_source["task_id"],
+                            carried_output, carried_source["measurements"]))
             else:
                 task_id = str(uuid.uuid4())
                 self._insert_task_locked(db, spec, task_id)
-                internal = f"workflow:{workflow_id}:revision:{revision}:child:{index}"
                 db.execute("""INSERT INTO workflow_children(
                     internal_id,workflow_id,revision,child_index,child_key,task_id,dependencies,delivery)
                     VALUES(?,?,?,?,?,?,?,?)""",
@@ -437,9 +599,45 @@ class WorkflowStore:
         self._workflow_event(db, root, "workflow.plan_accepted", revision=revision, child_count=len(inserted))
         return {"workflow_id": workflow_id, "revision": revision, "state": "accepted", "children": inserted}
 
-    def settle_plan(self, workflow_id, plan, *, replan=False):
+    def settle_plan(self, workflow_id, plan, *, replan=False, key=None):
+        """Settle a plan (or replan) as one command.
+
+        With an idempotency ``key`` the command is recorded: the same key and
+        payload return the original receipt marked ``duplicate``; the same key
+        with another payload is a conflict.  A non-replan settle is refused once
+        the workflow has an accepted plan.
+        """
+        kind = "workflow_replan" if replan else "workflow_plan"
+        payload_hash = None
+        if key is not None:
+            self.store.key_check(key)
+            try:
+                payload_hash = digest({"kind": kind, "workflow_id": workflow_id, "plan": plan})
+            except (ValueError, TypeError, RecursionError) as exc:
+                raise Invalid(f"Invalid workflow plan: {exc}") from exc
         with self.store.transaction() as db:
-            return self._settle_plan_locked(db, workflow_id, plan, replan=replan)
+            if key is not None:
+                existing = db.execute("SELECT * FROM commands WHERE idempotency_key=?", (key,)).fetchone()
+                if existing is not None:
+                    if existing["payload_hash"] != payload_hash:
+                        raise Conflict("Idempotency key already used with a different payload")
+                    stored = db.execute("SELECT receipt FROM workflow_plan_commands WHERE command_id=?",
+                                        (existing["id"],)).fetchone()
+                    if stored is None:
+                        raise Conflict("Idempotency key was already used by a different command")
+                    return {**json.loads(stored["receipt"]), "duplicate": True}
+            root = self._root_locked(db, workflow_id)
+            if not replan and root["plan_revision"] > 0:
+                raise Conflict("workflow already has an accepted plan; use replan to change it")
+            result = self._settle_plan_locked(db, workflow_id, plan, replan=replan)
+            if key is not None:
+                now, command_id = time.time(), str(uuid.uuid4())
+                result = {**result, "command_id": command_id, "duplicate": False}
+                db.execute("INSERT INTO commands(id,idempotency_key,kind,task_id,payload_hash,accepted_at) VALUES(?,?,?,?,?,?)",
+                           (command_id, key, kind, root["planner_task_id"], payload_hash, now))
+                db.execute("INSERT INTO workflow_plan_commands(command_id,workflow_id,receipt,created_at) VALUES(?,?,?,?)",
+                           (command_id, workflow_id, canonical(result), now))
+            return result
 
     def _task_result_json(self, db, task_id):
         row = db.execute("SELECT result_path FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -550,9 +748,19 @@ class WorkflowStore:
         if row is None:
             return True
         root = self._root_locked(db, row["workflow_id"])
-        if root["attempts_used"] >= root["max_attempts"]:
-            db.execute("UPDATE tasks SET status='Failed',reason='workflow_attempt_budget_exhausted',finished_at=?,version=version+1 WHERE id=? AND status='Pending'",
-                       (time.time(), task_id))
+        reason = None
+        if root["max_tokens"] is not None and root["tokens_used"] >= root["max_tokens"]:
+            reason = "workflow_token_budget_exhausted"
+        elif root["state"] == "failed":
+            reason = root["reason"] or "workflow_failed"
+        elif root["attempts_used"] >= root["max_attempts"]:
+            reason = "workflow_attempt_budget_exhausted"
+        if reason is not None:
+            # A failed or exhausted workflow admits no further child attempts.
+            now = time.time()
+            db.execute("UPDATE tasks SET status='Failed',reason=?,finished_at=?,version=version+1 WHERE id=? AND status='Pending'",
+                       (reason, now, task_id))
+            event(db, "task.finished", task_id, status="Failed", reason=reason)
             return False
         db.execute("UPDATE workflow_roots SET attempts_used=attempts_used+1,updated_at=? WHERE id=?",
                    (time.time(), row["workflow_id"]))
@@ -569,8 +777,8 @@ class WorkflowStore:
             db.execute("UPDATE workflow_roots SET state='failed',reason='workflow_token_budget_exhausted' WHERE id=?",
                        (row["workflow_id"],))
 
-    def replan(self, workflow_id, plan):
-        return self.settle_plan(workflow_id, plan, replan=True)
+    def replan(self, workflow_id, plan, key=None):
+        return self.settle_plan(workflow_id, plan, replan=True, key=key)
 
 
 # A small functional alias is convenient for callers that only need validation.

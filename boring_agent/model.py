@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -155,6 +156,19 @@ def strict_json(text: str) -> Any:
         return json.loads(text, object_pairs_hook=pairs, parse_constant=invalid_constant)
     except (ValueError, RecursionError) as exc:
         raise Invalid(f"Invalid JSON: {exc}") from exc
+
+
+def representable_path(value: str) -> bool:
+    """True when ``value`` is a path the OS can name: no NUL byte, strict UTF-8 text
+    (no lone surrogates) and encodable by the filesystem codec."""
+    if "\x00" in value:
+        return False
+    try:
+        value.encode("utf-8")
+        os.fsencode(value)
+    except UnicodeError:
+        return False
+    return True
 
 
 def fields(value, allowed, label):
@@ -318,8 +332,8 @@ def validate_spec(raw: dict, workspace_root: Path, allow_write: bool) -> dict:
     if not isinstance(expect_files, list) or len(expect_files) > 50:
         raise Invalid("expect_files must be a list of at most 50 relative paths")
     for item in expect_files:
-        if not isinstance(item, str) or not item or len(item) > 4096 or Path(item).is_absolute() or \
-                any(part.startswith(".") for part in Path(item).parts):
+        if not isinstance(item, str) or not item or len(item) > 4096 or not representable_path(item) or \
+                Path(item).is_absolute() or any(part.startswith(".") for part in Path(item).parts):
             raise Invalid("expect_files entries must be visible relative paths inside the workspace")
     workflow = raw.get("workflow")
     if workflow is not None:

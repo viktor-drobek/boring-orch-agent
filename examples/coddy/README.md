@@ -50,8 +50,10 @@ request carries it in `X-Coddy-Session-ID`. Before the first work turn, the
 worker runs `/compact` and `/rpa-init` once. A resumed session is adopted as
 prepared only when its snapshot explicitly proves both commands succeeded in
 that order through command records or adjacent user-command/assistant-success
-pairs; unrelated existing messages do not skip warm-up. A missing snapshot
-cannot carry inherited bypass permission. SSE is complete only after
+pairs; unrelated existing messages do not skip warm-up. A missing snapshot, or
+one that does not report `permissionMode`, starts at `ask` and cannot carry
+inherited bypass permission. An unconfirmed warm-up command leaves the session
+recovering until an operator confirms a retry. SSE is complete only after
 `data: [DONE]` plus a nonblank string `finish_reason` or
 `coddy_meta.stop_reason`; a broken or malformed stream is retained as an
 unconfirmed outcome.

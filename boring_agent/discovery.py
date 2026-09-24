@@ -218,14 +218,24 @@ def _resolve(route: Mapping[str, Any], environ: Mapping[str, str] | None = None,
         key: digest({"value": process_env.get(key, ""), "source": overrides[key] if not _credential_name(key) else "credential-reference"})
         for key in sorted(overrides)
     }
+    # The effective generative endpoint, including operator-environment fallbacks,
+    # is part of the approval: a credential reference is only ever sent to the
+    # provider and base URL the operator approved.
+    endpoint = {
+        "provider": route.get("provider") or process_env.get("BOA_PROVIDER", "openai"),
+        "base_url": route.get("base_url", route.get("url")) or process_env.get("BOA_BASE_URL", ""),
+        "model": route.get("model") or process_env.get("BOA_MODEL", ""),
+        "credential_ref": route.get("credential_ref") or "env:BOA_API_KEY",
+    }
     fingerprint_payload = {
         "route": route["id"], "executable": identity, "args": route["args"],
         "overrides": override_fingerprints, "provider": route.get("provider"),
         "base_url": route.get("base_url", route.get("url")), "model": route.get("model"),
         "credential_ref": route.get("credential_ref"), "credential_refs": route.get("credential_refs", {}),
+        "endpoint": endpoint,
     }
     return {"route": route, "route_key": route["id"], "executable": resolved, "identity": identity,
-            "env": process_env, "override_fingerprints": override_fingerprints,
+            "env": process_env, "override_fingerprints": override_fingerprints, "endpoint": endpoint,
             "fingerprint": digest(fingerprint_payload)}
 
 
@@ -263,7 +273,11 @@ def seed_passive_inventory(db, workspace_root: str | Path | None = None) -> list
 
 
 def ensure_schema(db) -> None:
-    db.executescript(DISCOVERY_SCHEMA)
+    # Never executescript(): it COMMITs first, which would end the caller's
+    # BEGIN IMMEDIATE and leave later statements in autocommit mode.
+    for statement in DISCOVERY_SCHEMA.split(";"):
+        if statement.strip():
+            db.execute(statement)
 
 
 @dataclass(frozen=True)
@@ -281,7 +295,7 @@ class Discovery:
         self.store = store
         configured = store.settings().get("discovery_output_bytes", 64 * 1024)
         self.max_output_bytes = max_output_bytes or configured
-        if isinstance(self.max_output_bytes, bool) or not 64 <= self.max_output_bytes <= 10 * 1024 * 1024:
+        if type(self.max_output_bytes) is not int or not 64 <= self.max_output_bytes <= 10 * 1024 * 1024:
             raise Invalid("discovery max_output_bytes must be between 64 and 10485760")
 
     def inventory(self, routes: list[Mapping[str, Any]] | None = None) -> list[dict]:
@@ -401,13 +415,15 @@ class Discovery:
 
     def handshake(self, route: Mapping[str, Any], approval_id: str | None = None, *, timeout: float | None = None,
                   max_output_bytes: int | None = None, allow_unlisted: bool = False) -> dict:
-        auth = self._authorize(route, "handshake", approval_id, allow_unlisted)
+        if max_output_bytes is not None and type(max_output_bytes) is not int:
+            raise Invalid("handshake max_output_bytes must be an integer")
         limit = max_output_bytes or self.max_output_bytes
         timeout = 10.0 if timeout is None else timeout
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not .01 <= timeout <= 3600:
             raise Invalid("handshake timeout must be between .01 and 3600 seconds")
         if not 64 <= limit <= 10 * 1024 * 1024:
             raise Invalid("handshake max_output_bytes is out of bounds")
+        auth = self._authorize(route, "handshake", approval_id, allow_unlisted)
         state_root = self.store.home / "discovery-state"
         state_root.mkdir(exist_ok=True, mode=0o700)
         state = state_root / str(uuid.uuid4())
@@ -474,25 +490,24 @@ class Discovery:
     def generative(self, route: Mapping[str, Any], prompt: str = "Return a bounded capability response.",
                    approval_id: str | None = None, *, requester: Callable | None = None,
                    output_tokens: int = 128, timeout: float = 30, allow_unlisted: bool = False) -> dict:
-        auth = self._authorize(route, "generative", approval_id, allow_unlisted)
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > 16 * 1024:
             raise Invalid("generative probe prompt must be nonempty and at most 16 KiB")
         if type(output_tokens) is not int or not 1 <= output_tokens <= 4096:
             raise Invalid("generative output_tokens must be between 1 and 4096")
-        if not isinstance(timeout, (int, float)) or not .01 <= timeout <= 300:
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not .01 <= timeout <= 300:
             raise Invalid("generative timeout must be between .01 and 300 seconds")
-        model = auth.resolved["route"].get("model") or auth.resolved["env"].get("BOA_MODEL", "")
+        auth = self._authorize(route, "generative", approval_id, allow_unlisted)
+        endpoint = auth.resolved["endpoint"]
+        model = endpoint["model"]
         if not model:
             raise Invalid("generative discovery requires an explicit model")
         try:
             if requester is None:
                 from .providers import Provider
-                route_value = auth.resolved["route"]
-                kind = route_value.get("provider") or auth.resolved["env"].get("BOA_PROVIDER", "openai")
-                base_url = route_value.get("base_url", route_value.get("url")) or auth.resolved["env"].get("BOA_BASE_URL", "")
-                reference = route_value.get("credential_ref") or "env:BOA_API_KEY"
-                api_key = auth.resolved["env"].get(_reference_name(reference), "")
-                requester = Provider(kind, base_url, model, api_key=api_key).complete
+                # Only the fingerprinted endpoint is used, so the credential goes
+                # exactly where the approval said it may go.
+                api_key = auth.resolved["env"].get(_reference_name(endpoint["credential_ref"]), "")
+                requester = Provider(endpoint["provider"], endpoint["base_url"], model, api_key=api_key).complete
             completion = requester([{"role": "user", "content": prompt}], model, output_tokens, timeout)
             text = getattr(completion, "text", completion)
             result = {"request_count": 1, "output": sanitize_evidence(text, self.max_output_bytes),

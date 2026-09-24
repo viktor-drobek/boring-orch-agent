@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from boring_agent.model import Conflict, Invalid, SessionConflict
+from boring_agent.providers import ExecutionError
 from boring_agent.session_lifecycle import (
     DEFAULT_WARMUP_MODEL,
     SessionLifecycle,
@@ -159,7 +160,7 @@ class SessionLifecycleTests(unittest.TestCase):
         def fail_init(command, model, received_session, key):
             first_calls.append((command, key))
             if command == "/rpa-init":
-                raise RuntimeError("temporary init failure")
+                raise ExecutionError("transient", "temporary init failure")
             return True
 
         with self.assertRaises(SessionConflict):
@@ -249,7 +250,7 @@ class SessionLifecycleTests(unittest.TestCase):
 
         def fail(command, model, received_session, key):
             failed_calls.append((command, model, received_session, key))
-            raise RuntimeError("temporary warm-up failure")
+            raise ExecutionError("transient", "temporary warm-up failure")
 
         with self.assertRaises(SessionConflict):
             self.lifecycle.warm_session(session_id, fail)
