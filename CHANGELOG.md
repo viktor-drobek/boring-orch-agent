@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0
+
 - Add a Claude Code project agent (`.claude/agents/boring-agent.md`, read-only coordinator run with `claude --agent boring-agent`) and its `exec` subagent (`.claude/agents/exec.md`) for development jobs; both inherit model and permission mode and are packaged in the wheel.
 - Reject NUL bytes and non-UTF-8 text in tool paths and `expect_files` as invalid input; the model receives a tool error instead of the runner crashing into `Unknown`.
 - Tool results for failed file operations no longer include absolute host paths.

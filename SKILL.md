@@ -1,6 +1,6 @@
 ---
 name: boring-agent
-version: 0.2.0
+version: 0.3.0
 description: >
   Run when the user asks to work with the boring-agent orchestrator,
   submit or manage tasks, configure workers, or develop the orchestrator itself.
