@@ -41,6 +41,10 @@ Legacy `llm` tasks retain `openai`, `anthropic`, and `ollama` as stateless compl
 
 This legacy HTTP adapter does not change the native exec rule above. Native jobs still launch through the parent's `spawn_agent` tool and must not make direct provider calls.
 
+## Coddy transport order
+
+When work uses Coddy from outside a Coddy session, prefer the HTTP Responses API (`coddy serve`, `POST /v1/responses`), then the Agent Client Protocol (`coddy acp`), then plain CLI prompts (`coddy -p`), in that order. Use a later transport only when every earlier one is unavailable or not configured for the project, and never switch transports to retry work whose outcome is `Unknown`. On the first run in a new project, before any other work, tell the operator which transport was selected and why each earlier one was not used, and ask the operator which permission mode and which model to use for the project. The permission mode may only narrow the current session's authority, and `bypass` is never offered. The chosen model is the project default only: a native job still runs with its own explicit `job.model`, and a missing or mismatched selector still blocks work. Do not start work until the operator has answered. A project is new when this agent has not run in it before, for example when its store home (`.boa` by default) does not exist yet. The legacy `coddy` provider implements only the API transport; ACP and plain CLI are agent-side choices, not runtimes of this package.
+
 ## Development workflow
 
 1. Read the relevant module, feature, and documentation before changing a contract.

@@ -4,7 +4,7 @@
 
 | Rule | Attachment | Scope |
 | --- | --- | --- |
-| `workflow.mdc` | Session start | Always on; native exec, job.model selection, ready-only dispatch, session lifecycle and result handoff |
+| `workflow.mdc` | Session start | Always on; native exec, job.model selection, ready-only dispatch, session lifecycle, Coddy transport order and result handoff |
 | `architecture.mdc` | Session start | Always on |
 | `testing.mdc` | Session start | Always on |
 | `code-style.mdc` | Session start | Always on |
