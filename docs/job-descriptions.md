@@ -20,7 +20,7 @@ For local work, copy one of the versioned templates in [`examples/jobs/`](../exa
 | `budget` | Maximum agent steps, provider request time, and output size. |
 | `retry` | Whether the logical job is safe to repeat after a confirmed transient failure. |
 | `coddy` | Optional session, streaming, permission, and subagent mention settings for `BOA_PROVIDER=coddy`. |
-| `expect_files` | Relative paths that must exist in the workspace when the job returns. The runner checks them before publishing the result, so a job cannot report success for a file it never wrote. The check is **existence at publication time**: it proves the file is there, not that this attempt created it or that its contents are correct. A file that already existed satisfies the check, so pair it with an `output_schema` that carries what the job produced, or with a following read-only review job. Paths are validated like every other task path: absolute, parent (`..`) and hidden components are rejected at submission. |
+| `expect_files` | Relative paths that must exist in the workspace when the job returns. The runner checks them before publishing the result, so a job cannot report success for a file it never wrote. The check is **existence at publication time**: it proves the file is there, not that this attempt created it or that its contents are correct. A file that already existed satisfies the check, so pair it with an `output_schema` that carries what the job produced, or with a following read-only review job. Paths are validated like every other task path: absolute, parent (`..`) and hidden components, NUL bytes and text that is not valid UTF-8 are rejected at submission. |
 
 ## Scenario: read-only repository review
 

@@ -16,9 +16,19 @@ flowchart LR
 - Idempotency is scoped to a caller command. A duplicate submit or cancel with the same payload returns its original receipt.
 - Attempts are separate from tasks. A terminal task has one accepted outcome; an `Unknown` attempt retains capacity until an operator records independent evidence that it stopped.
 - Results are written as artifacts and checked against the requested JSON Schema before a task becomes `Succeeded`.
+  A `Succeeded` attempt whose artifact is missing or unreadable at settlement fails
+  acceptance like a wrong result type and releases its reservation. One task's
+  unexpected settlement fault is logged by error class only and does not stop
+  other tasks from settling; that attempt is retried on the next tick.
+- A tool call with an invalid path (including a NUL byte or non-UTF-8 text) or a
+  failed file operation returns a tool error to the model and the attempt
+  continues. File-operation errors carry only the errno name, OS reason and the
+  workspace-relative path, never an absolute host path.
 - Retention is resumable: task payload rows are removed in foreign-key order, while
   submit command rows remain as idempotency tombstones until their independent
-  horizon. Result bytes may expire separately; task and event history remains
+  horizon. The final task-row deletion also removes any event recorded after the
+  dependents phase (for example a late cancel), so one task cannot block later
+  retention intents. Result bytes may expire separately; task and event history remains
   queryable and a missing retained result is reported as `gone`.
 - Store opening applies one durable, versioned migration under `BEGIN IMMEDIATE`.
   A committed migration intent is resumed by the next opener, and unsupported
