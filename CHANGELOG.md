@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `tools/coddy_driver`, the operator driver for unattended native jobs over the Coddy Responses API: `run_job.sh` runs a loopback `coddy serve` and the driver detached from the launching session; the driver pins session settings before the job turn, answers parent, woken-turn and detached-child permission prompts with a fail-closed allowlist, feeds child output to `ParentIdleWatchdog` and escalates to the parent, and records `unknown` for an unterminated stream, a still-running child or a lost server. The helper server runs with an isolated config (swarm, scheduler and gateways disabled; PyYAML added to the dev extras), and the policy also allows `scripts/bind_*.py --check`. Covered by `features/coddy_job_driver.feature` and `tests/test_coddy_driver.py`.
+
 ## 0.3.0
 
 - Add a Claude Code project agent (`.claude/agents/boring-agent.md`, read-only coordinator run with `claude --agent boring-agent`) and its `exec` subagent (`.claude/agents/exec.md`) for development jobs; both inherit model and permission mode and are packaged in the wheel.
