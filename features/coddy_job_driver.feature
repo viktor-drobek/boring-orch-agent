@@ -25,6 +25,9 @@ Feature: The Coddy job driver supervises an unattended native job without wideni
       | cd WORKSPACE-evil && ls                                         | reject |
       | echo $(id)                                                      | reject |
       | sed -i s/a/b/ README.md                                         | reject |
+      | PROJECT_PYTHON scripts/bind_text_quality.py --check             | allow  |
+      | PROJECT_PYTHON scripts/bind_text_quality.py                     | reject |
+      | PROJECT_PYTHON scripts/bind_claude.py --write                   | reject |
 
   Scenario: A permission prompt whose arguments cannot be read is rejected
     Given an unattended driver policy for a job workspace
@@ -61,3 +64,16 @@ Feature: The Coddy job driver supervises an unattended native job without wideni
     When the operator attaches the driver to an unknown session
     Then the driver exits with status 3
     And the recorded outcome is "session-unknown"
+
+  Scenario: The helper server's config cannot join a swarm, schedule work or open gateways
+    Given a primary Coddy config with providers, a permission mode, swarm joins, the scheduler and two gateways enabled
+    When the driver derives the isolated server config from it
+    Then the isolated config keeps the providers and the permission mode
+    And the isolated config disables the swarm, its joins, the scheduler and every gateway
+    And the isolated config directory is private and the file is readable only by its owner
+
+  Scenario: The primary Coddy config is found the way Coddy finds it
+    Given the environment variables CODDY_CONFIG and CODDY_HOME
+    Then the primary config is CODDY_CONFIG when it is set
+    And it is CODDY_HOME/config.yaml when only CODDY_HOME is set
+    And it is ~/.coddy/config.yaml otherwise

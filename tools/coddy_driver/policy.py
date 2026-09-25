@@ -16,7 +16,7 @@ READ_ONLY_PROGRAMS = {
     "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "sha256sum", "echo", "pwd",
     "sort", "uniq", "diff", "stat", "file", "tree", "test", "true", "cut", "tr", "basename", "dirname",
 }
-PROJECT_PYTHON_ARGS = re.compile(r"^(scripts/check_[a-z_]+\.py|scripts/validate_[a-z_]+\.py|-m (behave|unittest)\b)")
+PROJECT_PYTHON_ARGS = re.compile(r"^(scripts/check_[a-z_]+\.py|scripts/validate_[a-z_]+\.py|scripts/bind_[a-z_]+\.py --check\b|-m (behave|unittest)\b)")
 OPERATOR_CHARS = set(";&|<>()")
 EDIT_TOOLS = ("write", "edit", "patch", "create", "replace", "move")
 

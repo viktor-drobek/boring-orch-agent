@@ -5,10 +5,13 @@ import subprocess
 import tempfile
 import time
 import unittest
+
+import yaml
 from types import SimpleNamespace
 
 from tests.support.coddy_session_fixture import CoddySessionFixture, permission_prompt
 from tools.coddy_driver import driver as driver_module
+from tools.coddy_driver.isolated_config import primary_config_path, write_isolated_config
 from tools.coddy_driver.policy import Policy
 
 PY = "/opt/project/.venv/bin/python"
@@ -68,6 +71,60 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(decide({"toolCall": {"kind": "edit_file",
                                               "args": {"path": f"{self.workspace}-evil/x"}}})[0], "reject")
         self.assertEqual(decide({"toolCall": {"kind": "delete_file", "args": {"path": "a"}}})[0], "reject")
+
+
+class IsolatedConfigTests(unittest.TestCase):
+    def test_derives_job_config_without_runtime_conflicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "primary.yaml"
+            state = root / "state"
+            destination = state / "isolated-config.yaml"
+            source.write_text(
+                """providers:
+  - name: fixture
+    api_key: placeholder-only
+tools:
+  permission_mode: accept_edits
+swarm:
+  enable: true
+  join:
+    - url: http://relay.invalid
+scheduler:
+  enable: true
+gateways:
+  telegram:
+    enable: true
+    token: placeholder-only
+  local:
+    enable: true
+""",
+                encoding="utf-8",
+            )
+
+            write_isolated_config(source, destination)
+            derived = yaml.safe_load(destination.read_text(encoding="utf-8"))
+
+            self.assertEqual(derived["providers"][0]["api_key"], "placeholder-only")
+            self.assertEqual(derived["tools"]["permission_mode"], "accept_edits")
+            self.assertFalse(derived["swarm"]["enable"])
+            self.assertEqual(derived["swarm"]["join"], [])
+            self.assertFalse(derived["scheduler"]["enable"])
+            self.assertFalse(derived["gateways"]["telegram"]["enable"])
+            self.assertFalse(derived["gateways"]["local"]["enable"])
+            self.assertEqual(state.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+
+    def test_primary_config_precedence(self):
+        root = Path("/tmp")
+        explicit = root / "explicit.yaml"
+        coddy_home = root / "coddy-home"
+        self.assertEqual(
+            primary_config_path({"CODDY_CONFIG": str(explicit), "CODDY_HOME": str(coddy_home)}, root),
+            explicit,
+        )
+        self.assertEqual(primary_config_path({"CODDY_HOME": str(coddy_home)}, root), coddy_home / "config.yaml")
+        self.assertEqual(primary_config_path({}, root), root / ".coddy" / "config.yaml")
 
 
 class DriverTests(unittest.TestCase):

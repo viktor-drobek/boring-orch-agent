@@ -9,6 +9,7 @@ from behave import given, then, when
 from tests.support.coddy_session_fixture import CoddySessionFixture, permission_prompt
 from tools.coddy_driver import driver as driver_module
 from tools.coddy_driver.policy import Policy
+from tools.coddy_driver import isolated_config
 
 PROJECT_PYTHON = "/opt/project/.venv/bin/python"
 
@@ -164,3 +165,82 @@ def attach_unknown(context):
 @then("the driver exits with status {code:d}")
 def exits(context, code):
     assert context.driver_exit == code, context.driver_exit
+
+
+PRIMARY_CONFIG = """providers:
+  - name: fixture
+    api_key: placeholder-only
+tools:
+  permission_mode: accept_edits
+swarm:
+  enable: true
+  join:
+    - url: http://relay.invalid
+scheduler:
+  enable: true
+gateways:
+  telegram:
+    enable: true
+    token: placeholder-only
+  local:
+    enable: true
+"""
+
+
+@given("a primary Coddy config with providers, a permission mode, swarm joins, the scheduler and two gateways enabled")
+def primary_config(context):
+    root = Path(tempfile.mkdtemp(prefix="coddy-config-"))
+    context.primary_config = root / "primary.yaml"
+    context.primary_config.write_text(PRIMARY_CONFIG, encoding="utf-8")
+    context.isolated_path = root / "state" / "isolated-config.yaml"
+
+
+@when("the driver derives the isolated server config from it")
+def derive_isolated(context):
+    import yaml
+    isolated_config.write_isolated_config(context.primary_config, context.isolated_path)
+    context.isolated = yaml.safe_load(context.isolated_path.read_text(encoding="utf-8"))
+
+
+@then("the isolated config keeps the providers and the permission mode")
+def keeps_providers(context):
+    assert context.isolated["providers"][0]["api_key"] == "placeholder-only", context.isolated
+    assert context.isolated["tools"]["permission_mode"] == "accept_edits", context.isolated
+
+
+@then("the isolated config disables the swarm, its joins, the scheduler and every gateway")
+def disables_coordination(context):
+    config = context.isolated
+    assert config["swarm"]["enable"] is False and config["swarm"]["join"] == [], config
+    assert config["scheduler"]["enable"] is False, config
+    assert all(gateway["enable"] is False for gateway in config["gateways"].values()), config
+
+
+@then("the isolated config directory is private and the file is readable only by its owner")
+def private_files(context):
+    assert context.isolated_path.parent.stat().st_mode & 0o777 == 0o700
+    assert context.isolated_path.stat().st_mode & 0o777 == 0o600
+
+
+@given("the environment variables CODDY_CONFIG and CODDY_HOME")
+def config_environment(context):
+    context.config_home = Path("/home/operator")
+
+
+@then("the primary config is CODDY_CONFIG when it is set")
+def config_explicit(context):
+    found = isolated_config.primary_config_path({"CODDY_CONFIG": "/etc/coddy.yaml", "CODDY_HOME": "/srv/coddy"},
+                                                context.config_home)
+    assert found == Path("/etc/coddy.yaml"), found
+
+
+@then("it is CODDY_HOME/config.yaml when only CODDY_HOME is set")
+def config_home(context):
+    found = isolated_config.primary_config_path({"CODDY_HOME": "/srv/coddy"}, context.config_home)
+    assert found == Path("/srv/coddy/config.yaml"), found
+
+
+@then("it is ~/.coddy/config.yaml otherwise")
+def config_default(context):
+    found = isolated_config.primary_config_path({}, context.config_home)
+    assert found == context.config_home / ".coddy" / "config.yaml", found

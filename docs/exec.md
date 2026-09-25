@@ -64,6 +64,12 @@ bearer token passed through the environment, and runs the driver; both are
 detached with `setsid`, so a run survives the terminal or agent session that
 started it. A server that dies takes its in-process children with it, which is
 why it must not live inside a supervising session.
+The server runs with an isolated config derived from the operator's primary
+Coddy config (`CODDY_CONFIG`, else `CODDY_HOME/config.yaml`, else
+`~/.coddy/config.yaml`): providers, models and permissions are kept, while the
+swarm, its joins, the scheduler and every gateway are disabled, so the helper
+server cannot join a relay, run scheduled jobs or answer chat gateways. The file
+is written atomically with mode 0600 in a 0700 directory.
 
 The driver validates the job with `validate_native_job` and takes model,
 workspace, permission mode and interpreter from it. It creates a fresh session
@@ -72,8 +78,8 @@ with `PATCH /coddy/sessions/{id}` before the job turn, and streams that turn.
 It then follows woken turns on the composer stream and detached children on
 `GET /coddy/events`, answering every permission prompt with
 `tools/coddy_driver/policy.py`: reads, read-only `git` and the project
-interpreter's `scripts/check_*`, `scripts/validate_*`, `-m behave` and
-`-m unittest` are allowed; redirection, background jobs, subshells, command
+interpreter's `scripts/check_*`, `scripts/validate_*`, `scripts/bind_* --check`,
+`-m behave` and `-m unittest` are allowed; redirection, background jobs, subshells, command
 substitution, inline Python, writes outside the workspace and deletes are
 rejected, and a prompt whose arguments cannot be read is rejected.
 

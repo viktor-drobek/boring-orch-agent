@@ -14,11 +14,22 @@ PORT="${CODDY_DRIVER_PORT:-12345}"
 BASE="http://127.0.0.1:$PORT"
 TOKEN_FILE="$STATE_DIR/http-token"
 SERVE_PID="$STATE_DIR/serve.pid"
+ISOLATED_CONFIG="$STATE_DIR/isolated-config.yaml"
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 
 serve_alive() {
   [[ -s "$SERVE_PID" ]] && kill -0 "$(cat "$SERVE_PID")" 2>/dev/null
+}
+
+prepare_isolated_config() {
+  PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 - "$ISOLATED_CONFIG" <<'PY'
+from pathlib import Path
+import sys
+from isolated_config import primary_config_path, write_isolated_config
+
+write_isolated_config(primary_config_path(), Path(sys.argv[1]))
+PY
 }
 
 ensure_serve() {
@@ -32,8 +43,10 @@ ensure_serve() {
     echo "port $PORT is taken by a server this script did not start; set CODDY_DRIVER_PORT" >&2
     exit 1
   fi
+  prepare_isolated_config
   # The token goes through the environment, never the command line.
-  CODDY_HTTP_TOKEN="$(cat "$TOKEN_FILE")" setsid nohup coddy serve --http --host 127.0.0.1 --port "$PORT" \
+  CODDY_HTTP_TOKEN="$(cat "$TOKEN_FILE")" CODDY_CONFIG="$ISOLATED_CONFIG" setsid nohup coddy serve --http --host 127.0.0.1 --port "$PORT" \
+    --config "$ISOLATED_CONFIG" \
     >> "$STATE_DIR/serve.log" 2>&1 < /dev/null &
   echo $! > "$SERVE_PID"
   for _ in $(seq 60); do
