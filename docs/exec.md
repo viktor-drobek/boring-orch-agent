@@ -44,6 +44,48 @@ If parent observation is unavailable, report `HANDOFF` rather than claiming
 that idle supervision happened. A child must not implement a replacement
 watchdog for itself.
 
+## Operator driver for Coddy serve
+
+`tools/coddy_driver` is the operator side of an unattended native run over the
+Coddy Responses API. It starts the parent session and supervises it; the job
+itself still runs inside Coddy, where the parent delegates through
+`spawn_agent`. It never submits to the manager, starts workers, nests `coddy`
+processes or calls a model provider.
+
+```bash
+tools/coddy_driver/run_job.sh launch JOB.json PARENT_PROMPT.md
+tools/coddy_driver/run_job.sh status JOB.json
+tools/coddy_driver/run_job.sh attach JOB.json SESSION_ID
+tools/coddy_driver/run_job.sh stop-serve
+```
+
+`run_job.sh` starts (or reuses) `coddy serve` on `127.0.0.1` with a generated
+bearer token passed through the environment, and runs the driver; both are
+detached with `setsid`, so a run survives the terminal or agent session that
+started it. A server that dies takes its in-process children with it, which is
+why it must not live inside a supervising session.
+
+The driver validates the job with `validate_native_job` and takes model,
+workspace, permission mode and interpreter from it. It creates a fresh session
+with one bootstrap turn, pins `permissionMode`, `mode` and `selectedModelId`
+with `PATCH /coddy/sessions/{id}` before the job turn, and streams that turn.
+It then follows woken turns on the composer stream and detached children on
+`GET /coddy/events`, answering every permission prompt with
+`tools/coddy_driver/policy.py`: reads, read-only `git` and the project
+interpreter's `scripts/check_*`, `scripts/validate_*`, `-m behave` and
+`-m unittest` are allowed; redirection, background jobs, subshells, command
+substitution, inline Python, writes outside the workspace and deletes are
+rejected, and a prompt whose arguments cannot be read is rejected.
+
+It feeds new child output to `ParentIdleWatchdog` as visible progress, polls it
+only while a child is running, and hands `NEEDS_MODEL_DECISION` to the parent
+(queued to its turn, or as a new turn). It records the outcome in
+`<job dir>/<job id>/state.json`: `unknown` when a turn ended without
+`data: [DONE]`, a child was still running, or the server was lost (repeated
+connection failures; an HTTP error means the server is up), otherwise the
+status the parent reported. `attach` to a session the server does not know
+exits with status 3 and outcome `session-unknown`.
+
 ## Adding a job
 
 A new operational job needs an immutable source document and an authoritative
